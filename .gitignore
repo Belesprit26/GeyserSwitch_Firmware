@@ -1,0 +1,24 @@
+# Sensitive credential files - NEVER commit these!
+credentials.h
+temp_credentials.h
+
+# Arduino build files
+*.elf
+*.hex
+*.bin
+build/
+.cache/
+
+# IDE and OS files
+.vscode/
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Logs and debug files
+*.log
+SerialOutput.txt
+
+# Firebase and other config files with secrets
+*_secrets.h
+config.h

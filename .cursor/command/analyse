@@ -1,0 +1,9 @@
+analyze
+
+1. Look into the user's input (look at tha chat/conversation's previous context and keep that in mind when moving forward)
+2. assess the request against the project's codebase
+3. do a comprehensive analysis of the request in relation to the codebase, prioritising code related to the user's prompt
+4. propose no less than 3 plans of action (where applicable)
+5. give a summary of what the potential pros and cons are for each plan of action (where applicable)
+6. without deviating from the request AND context, make recommendations (if there are any).
+7. do not execute on any code. Only give feedback.
