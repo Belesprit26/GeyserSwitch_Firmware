@@ -14,6 +14,17 @@
 #define DEFAULT_EMAIL "your-email@example.com"
 #define DEFAULT_USER_PASSWORD "your-password"
 
+// EEPROM Injection Credentials (for development/testing) - uses defaults above
+#define TEMP_SSID DEFAULT_WIFI_SSID
+#define TEMP_PASSWORD DEFAULT_WIFI_PASSWORD
+#define TEMP_EMAIL DEFAULT_EMAIL
+#define TEMP_USER_PASSWORD DEFAULT_USER_PASSWORD
+
+// Toggle to inject credentials into EEPROM on boot
+#ifndef USE_TEMP_CREDS
+#define USE_TEMP_CREDS 1
+#endif
+
 // Root CA Certificate for Firebase - paste the correct CA here
 const char firebase_root_ca[] PROGMEM = R"EOF(
 -----BEGIN CERTIFICATE-----

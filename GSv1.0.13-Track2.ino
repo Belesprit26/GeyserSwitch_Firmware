@@ -5,7 +5,7 @@
 #include "timers.h"
 #include "ota.h"
 #include "tracking.h"
-#include "temp_credentials.h"
+#include "secrets.h"
 #include "leak_detection.h"
 #include "reset_button.h"
 #include <PubSubClient.h>  // For MQTT broker/client functionality

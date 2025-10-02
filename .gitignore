@@ -1,6 +1,6 @@
 # Sensitive credential files - NEVER commit these!
 credentials.h
-temp_credentials.h
+secrets.h
 .cursor/
 
 # Arduino build files
