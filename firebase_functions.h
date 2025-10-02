@@ -10,9 +10,8 @@
 #include <ESP8266WiFi.h>
 #endif
 
-#define API_KEY "AIzaSyCvhm9ZC2e_-o6KWSPqOlK7PxEhJoRucFk"
-#define DATABASE_URL "https://geyserswitch-bloc-default-rtdb.firebaseio.com/"
-#define STORAGE_BUCKET_ID "gs://geyserswitch-bloc.appspot.com"
+// Load sensitive config from untracked header
+#include "secrets.h"
 
 // Do not declare global ssl_client here; managed internally in firebase_functions.cpp
 
