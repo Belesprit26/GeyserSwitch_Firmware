@@ -434,12 +434,12 @@ void sendNotificationJSON(String bodyMessage, String jsonData) {
 
 // Callback function for Firebase real-time updates
 void firebaseUpdateCallback(AsyncResult &aResult) {
-    if (aResult.available()) {
+    if (aResult.available() && DatabasePtr && aClientPtr) {  // Safety check for initialized pointers
         // Check if this is an update to the geyser control path
         String path = aResult.path();
         if (path == gsFree + geyser_1) {
-            // Immediate response to Firebase changes - get boolean value from result
-            bool geyserState = aResult.to<bool>().boolValue;
+            // Immediate response to Firebase changes - use same approach as dbGetBool
+            bool geyserState = DatabasePtr->get<bool>(*aClientPtr, path);
             digitalWrite(15, geyserState ? HIGH : LOW);  // Use hardcoded pin value (15)
             Serial.printf("Geyser %s via Firebase (real-time)\n", geyserState ? "ON" : "OFF");
         }
