@@ -260,10 +260,10 @@ void syncTask(void *pvParameters) {
             wasOnline = false;
         }
 
-        // Periodic Firebase sync if online
+        // Periodic Firebase sync if online (sensors, logging - geyser control now uses real-time listeners)
         if (isOnline && millis() - lastSyncTime >= syncInterval) {
             Serial.println("Performing periodic Firebase sync");
-            // Sync time and update records
+            // Sync time and update records (no geyser polling needed - listeners handle it)
             initializeAndSyncTime(realDate, realTime);
             if (setStringValue(gsFree + updateRecords + "/updateDate", realDate) &&
                 setStringValue(gsFree + updateRecords + "/updateTime", realTime)) {
