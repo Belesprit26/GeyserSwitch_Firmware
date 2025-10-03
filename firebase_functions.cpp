@@ -438,9 +438,9 @@ void firebaseUpdateCallback(AsyncResult &aResult) {
         // Check if this is an update to the geyser control path
         String path = aResult.path();
         if (path == gsFree + geyser_1) {
-            // Immediate response to Firebase changes
-            bool geyserState = aResult.to<bool>();
-            digitalWrite(geyser_1_pin, geyserState ? HIGH : LOW);
+            // Immediate response to Firebase changes - get boolean value from result
+            bool geyserState = aResult.to<bool>().boolValue;
+            digitalWrite(15, geyserState ? HIGH : LOW);  // Use hardcoded pin value (15)
             Serial.printf("Geyser %s via Firebase (real-time)\n", geyserState ? "ON" : "OFF");
         }
     }
