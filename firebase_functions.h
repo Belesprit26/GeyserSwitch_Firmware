@@ -83,5 +83,7 @@ void sendNotificationInt(String bodyMessage, int dataValue);
 void sendNotificationFloat(String bodyMessage, float dataValue);
 void sendNotificationJSON(String bodyMessage, String jsonData);
 
+// Firebase real-time listener setup
+void setupFirebaseListeners();
 
 #endif // FIREBASE_FUNCTIONS_H

@@ -250,6 +250,8 @@ void syncTask(void *pvParameters) {
             } else {
                 Serial.println("Failed to sync geyser state - will retry");
             }
+            // Setup real-time Firebase listeners for immediate control
+            setupFirebaseListeners();
             // TODO: Sync any queued sensor data or MQTT history here
             wasOnline = true;
             lastSyncTime = millis();

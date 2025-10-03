@@ -431,3 +431,29 @@ void sendNotificationFloat(String bodyMessage, float dataValue) {
 void sendNotificationJSON(String bodyMessage, String jsonData) {
     sendNotification(bodyMessage, jsonData);
 }
+
+// Callback function for Firebase real-time updates
+void firebaseUpdateCallback(AsyncResult &aResult) {
+    if (aResult.available()) {
+        // Check if this is an update to the geyser control path
+        String path = aResult.path();
+        if (path == gsFree + geyser_1) {
+            // Immediate response to Firebase changes
+            bool geyserState = aResult.to<bool>();
+            digitalWrite(geyser_1_pin, geyserState ? HIGH : LOW);
+            Serial.printf("Geyser %s via Firebase (real-time)\n", geyserState ? "ON" : "OFF");
+        }
+    }
+}
+
+// Firebase real-time listener setup
+void setupFirebaseListeners() {
+    if (DatabasePtr && aClientPtr) {
+        Serial.println("Setting up Firebase real-time listeners...");
+        // Listen for changes to geyser control
+        DatabasePtr->get(*aClientPtr, gsFree + geyser_1, firebaseUpdateCallback, true); // true = keep listening
+        Serial.println("Firebase real-time listener active for geyser control");
+    } else {
+        Serial.println("Firebase not initialized - cannot setup listeners");
+    }
+}
