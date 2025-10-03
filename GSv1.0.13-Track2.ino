@@ -57,6 +57,9 @@ TaskHandle_t mqttTaskHandle = NULL;
 TaskHandle_t controlTaskHandle = NULL;
 TaskHandle_t syncTaskHandle = NULL;
 
+// FreeRTOS Mutex for protecting shared resources
+SemaphoreHandle_t controlMutex = NULL;
+
 // MQTT Client and Server (for broker emulation)
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
@@ -102,6 +105,13 @@ void setup() {
     initTracking();
 
     Serial.println("Booting...");
+
+    // Initialize FreeRTOS Mutex for thread safety
+    controlMutex = xSemaphoreCreateMutex();
+    if (controlMutex == NULL) {
+        Serial.println("ERROR: Failed to create mutex!");
+        ESP.restart();
+    }
 
     // Set up MQTT Broker (ESP32 as AP)
     WiFi.softAP("GeyserHub", "password123");  // Create AP for clients to connect
@@ -213,20 +223,24 @@ void mqttTask(void *pvParameters) {
 void controlTask(void *pvParameters) {
     // Handle sensor reading, geyser control, and MQTT commands
     for (;;) {
-        // Process queued MQTT commands
-        if (!offlineQueue.isEmpty()) {
-            String cmd = offlineQueue.dequeue();
-            if (cmd == "on") {
-                digitalWrite(geyser_1_pin, HIGH);
-                Serial.println("Geyser turned ON via MQTT");
-            } else if (cmd == "off") {
-                digitalWrite(geyser_1_pin, LOW);
-                Serial.println("Geyser turned OFF via MQTT");
+        // Process queued MQTT commands (protected by mutex)
+        if (xSemaphoreTake(controlMutex, portMAX_DELAY) == pdTRUE) {
+            if (!offlineQueue.isEmpty()) {
+                String cmd = offlineQueue.dequeue();
+                if (cmd == "on") {
+                    digitalWrite(15, HIGH);  // Use hardcoded pin
+                    Serial.println("Geyser turned ON via MQTT");
+                } else if (cmd == "off") {
+                    digitalWrite(15, LOW);  // Use hardcoded pin
+                    Serial.println("Geyser turned OFF via MQTT");
+                }
             }
-        }
 
-        // Existing sensor-based control
-        controlGeyserBasedOnMaxTemp();
+            // Existing sensor-based control (includes OneWire operations)
+            controlGeyserBasedOnMaxTemp();
+
+            xSemaphoreGive(controlMutex);
+        }
 
         vTaskDelay(5000 / portTICK_PERIOD_MS);  // 5s loop
     }
@@ -262,16 +276,20 @@ void syncTask(void *pvParameters) {
 
         // Periodic Firebase sync if online (sensors, logging - geyser control now uses real-time listeners)
         if (isOnline && millis() - lastSyncTime >= syncInterval) {
-            Serial.println("Performing periodic Firebase sync");
-            // Sync time and update records (no geyser polling needed - listeners handle it)
-            initializeAndSyncTime(realDate, realTime);
-            if (setStringValue(gsFree + updateRecords + "/updateDate", realDate) &&
-                setStringValue(gsFree + updateRecords + "/updateTime", realTime)) {
-                Serial.println("Time and records synced successfully");
-            } else {
-                Serial.println("Failed to sync time/records - will retry next cycle");
+            // Protect Firebase operations with mutex
+            if (xSemaphoreTake(controlMutex, portMAX_DELAY) == pdTRUE) {
+                Serial.println("Performing periodic Firebase sync");
+                // Sync time and update records (no geyser polling needed - listeners handle it)
+                initializeAndSyncTime(realDate, realTime);
+                if (setStringValue(gsFree + updateRecords + "/updateDate", realDate) &&
+                    setStringValue(gsFree + updateRecords + "/updateTime", realTime)) {
+                    Serial.println("Time and records synced successfully");
+                } else {
+                    Serial.println("Failed to sync time/records - will retry next cycle");
+                }
+                lastSyncTime = millis();
+                xSemaphoreGive(controlMutex);
             }
-            lastSyncTime = millis();
         }
 
         vTaskDelay(10000 / portTICK_PERIOD_MS);  // 10s loop
