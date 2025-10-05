@@ -2,6 +2,7 @@
 #include "firebase_functions.h"
 #include "date_util.h"
 #include "temp_control.h"
+#include "tracking.h"
 
 // Global variables to store the trigger times (hours only) and states
 const String triggerHours[] = {"04", "06", "08", "16", "18", "20"};
@@ -30,12 +31,16 @@ void controlGeyserWithTimers() {
         Serial.print(" (Path: ");
         Serial.print(timerPaths[i]);
         Serial.print("): ");
-        Serial.println(dbGetBool(gsFree + timerPaths[i]));
+        refreshConfigCache10s();
+        bool timerVal = getTimerCached(i);
+        Serial.println(timerVal);
 
         // Check if the timer is active and the current hour matches the trigger hour
-        if (dbGetBool(gsFree + timerPaths[i]) && currentHour == triggerHours[i]) {
+        if (timerVal && currentHour == triggerHours[i]) {
             if (!actionTriggeredTodayGeyser[i]) {
                 setBoolValue(gsFree + geyser_1, true);  // Turn on the geyser
+                digitalWrite(15, HIGH);  // Also control the physical pin
+                trackGeyserUsage(geyser_1, true);  // Track usage
                 Serial.println("Geysers turned on at " + triggerHours[i] + ":00");
                 actionTriggeredTodayGeyser[i] = true;  // Prevent re-triggering within the same hour
                 sendNotification( triggerHours[i] + ":00" + " Timer Alert: Your geyser(s) has turned on.", "Time: " + currentHourMinute);
@@ -56,6 +61,8 @@ void controlGeyserWithTimers() {
     if (customTimer.length() > 0 && customTimer == currentHourMinute) { // Check if the custom timer matches the current time
         if (!customActionTriggered) {
             setBoolValue(gsFree + geyser_1, true);  // Turn on geyser
+            digitalWrite(15, HIGH);  // Also control the physical pin
+            trackGeyserUsage(geyser_1, true);  // Track usage
             Serial.println("Geysers turned on at custom time: " + customTimer);
             customActionTriggered = true;  // Prevent re-triggering within the same minute
             sendNotification(customTimer +" Custom Timer Alert: Your geyser(s) has turned on.", "Time: " + currentHourMinute);

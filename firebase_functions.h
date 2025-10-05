@@ -86,4 +86,12 @@ void sendNotificationJSON(String bodyMessage, String jsonData);
 // Firebase real-time listener setup
 void setupFirebaseListeners();
 
+// Config defaults and cached refresh
+void ensureDefaultTreeIfMissing();
+void refreshConfigCache10s();
+bool getTimerCached(int index);
+String getCustomTimerCached();
+double getMaxTemp1Cached();
+
+
 #endif // FIREBASE_FUNCTIONS_H

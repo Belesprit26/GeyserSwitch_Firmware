@@ -2,8 +2,8 @@
 #include "date_util.h"
 #include "firebase_functions.h"
 #include "temp_control.h"
-#include "timers.h"
-#include "ota.h"
+#include "timers.h" 
+#include "ota.h" 
 #include "tracking.h"
 #include "secrets.h"
 #include "leak_detection.h"
@@ -120,14 +120,17 @@ void setup() {
 
     // Start FreeRTOS Tasks
     xTaskCreate(mqttTask, "MQTT Task", 4096, NULL, 1, &mqttTaskHandle);       // Priority 1: Medium (communications)
-    xTaskCreate(controlTask, "Control Task", 4096, NULL, 2, &controlTaskHandle); // Priority 2: High (critical control)
-    xTaskCreate(syncTask, "Sync Task", 4096, NULL, 0, &syncTaskHandle);         // Priority 0: Low (background sync)
+    xTaskCreate(controlTask, "Control Task", 8192, NULL, 2, &controlTaskHandle); // Priority 2: High (critical control)
+    xTaskCreate(syncTask, "Sync Task", 8192, NULL, 0, &syncTaskHandle);         // Priority 0: Low (background sync) - Increased stack for Firebase operations
 }
 
 void loop() {
     // Simplified loop: Core logic now in FreeRTOS tasks
     checkResetButton(rstButtonPin);  // Reset button check
     server.handleClient();           // Web server for config
+
+    // Option 1: Ensure Firebase auth processing runs continuously at high cadence
+    authLoop();
     
     // Wi-Fi STA connection (for Firebase/MQTT app sync)
     if (!wifiConnected) {
@@ -249,13 +252,40 @@ void controlTask(void *pvParameters) {
 void syncTask(void *pvParameters) {
     // Handle offline/online detection and Firebase sync
     static bool wasOnline = false;
+    static bool firebaseInitialized = false;
     static unsigned long lastSyncTime = 0;
-    const unsigned long syncInterval = 60000;  // 1 minute sync interval
+    const unsigned long syncInterval = 10000;  // 10 seconds sync interval for config refresh
 
     for (;;) {
-        bool isOnline = (WiFi.status() == WL_CONNECTED && firebaseIsReady());
+        // Check if Wi-Fi is connected
+        bool wifiConnected = (WiFi.status() == WL_CONNECTED);
 
-        if (isOnline && !wasOnline) {
+        // Initialize Firebase when Wi-Fi connects (only once)
+        if (wifiConnected && !firebaseInitialized) {
+            Serial.println("Wi-Fi connected - initializing Firebase...");
+            // Ensure NTP time is synced before any TLS/Firebase operations
+            initializeAndSyncTime(realDate, realTime);
+            setupFirebase();
+            firebaseInitialized = true;
+            Serial.println("Firebase initialization attempted");
+        }
+
+        // Process Firebase authentication (required for async auth to complete)
+        if (firebaseInitialized) {
+            authLoop();  // This handles the authentication process
+        }
+
+        bool isOnline = (wifiConnected && firebaseIsReady());
+
+        // Ensure per-user base path is initialized once auth is ready
+        static bool userPathInit = false;
+        if (wifiConnected && firebaseIsReady() && !userPathInit) {
+            if (firebaseInitUserPath()) {
+                userPathInit = true;
+            }
+        }
+
+        if (isOnline && userPathInit && !wasOnline) {
             Serial.println("Back online - syncing queued data to Firebase");
             // Sync current geyser state immediately
             bool currentState = digitalRead(geyser_1_pin) == HIGH;
@@ -292,6 +322,17 @@ void syncTask(void *pvParameters) {
             }
         }
 
-        vTaskDelay(10000 / portTICK_PERIOD_MS);  // 10s loop
+        // Check timers every sync interval (1 minute) when online
+        static unsigned long lastTimerCheck = 0;
+        if (isOnline && millis() - lastTimerCheck >= syncInterval) {
+            // Refresh config cache OUTSIDE the mutex to avoid blocking other tasks
+            refreshConfigCache10s();
+            if (xSemaphoreTake(controlMutex, portMAX_DELAY) == pdTRUE) {
+                Serial.println("Checking timer schedules...");
+                controlGeyserWithTimers();
+                lastTimerCheck = millis();
+                xSemaphoreGive(controlMutex);
+            }
+        }
     }
 }

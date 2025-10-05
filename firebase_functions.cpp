@@ -1,4 +1,5 @@
 #include "firebase_functions.h"
+#include "tracking.h"
 
 // Enable Firebase features and include the library only in this translation unit
 #ifndef ENABLE_DATABASE
@@ -10,6 +11,7 @@
 #ifndef ENABLE_USER_AUTH
 #define ENABLE_USER_AUTH
 #endif
+
 #include <FirebaseClient.h>
 using namespace firebase_ns;
 #include "date_util.h"
@@ -64,8 +66,23 @@ const String records = "/Records/LastBoot";
 // Last Updated
 const String updateRecords = "/Records/LastUpdate";
 
+// In-memory config cache refreshed every 10 seconds
+static struct ConfigCache {
+    bool timer04 = false;
+    bool timer06 = false;
+    bool timer08 = false;
+    bool timer16 = false;
+    bool timer18 = false;
+    String customTimer; // HH:MM or empty
+    double maxTemp1 = 75.0; // sensible default
+    unsigned long lastRefreshMs = 0;
+} configCache;
+
 // Forward declarations for local helpers
 static void printResult(AsyncResult &aResult);
+static String firebaseHost();
+static bool quickTlsProbe(const char* host);
+static void refreshConfigCacheInternal();
 
 // Define the rest of the functions, e.g., setupFirebase(), authHandler(), etc.
 void setupFirebase()
@@ -96,8 +113,7 @@ void setupFirebase()
     // Configure TLS now that the SSL client exists
 #if defined(ESP32) || defined(ESP8266) || defined(ARDUINO_RASPBERRY_PI_PICO_W)
     if (ssl_client_ptr) {
-        // For quick validation you can switch to insecure, then revert to CA
-        // ssl_client_ptr->setInsecure();
+        // Manual root CA pinning (compatible with ESP32 core 3.3.1)
         ssl_client_ptr->setCACert(firebase_root_ca);
     }
 #endif
@@ -114,6 +130,11 @@ void setupFirebase()
      // Setting the external async result to the sync task (optional)
     aClientPtr->setAsyncResult(*aResult_no_callback_ptr);
 
+    // Optional TLS probes for diagnostics
+    quickTlsProbe(firebaseHost().c_str());
+    quickTlsProbe("securetoken.googleapis.com");
+    quickTlsProbe("identitytoolkit.googleapis.com");
+
     Serial.println("Firebase setup complete.");
 
     // Do not read UID here; auth is non-blocking. UID will be read in the main loop.
@@ -125,12 +146,33 @@ void authHandler() {
     if (appPtr && appPtr->isInitialized() && !appPtr->ready()) {
         JWT.loop(appPtr->getAuth());
         if (aResult_no_callback_ptr) printResult(*aResult_no_callback_ptr);
+        // Auth visibility (rate-limited to 1s)
+        static unsigned long _lastAuthLogMs = 0;
+        unsigned long _now = millis();
+        if (_now - _lastAuthLogMs >= 1000) {
+            Serial.printf("Auth state - init:%d ready:%d code:%d\n",
+                          appPtr->isInitialized(), appPtr->ready(),
+                          aResult_no_callback_ptr ? aResult_no_callback_ptr->error().code() : 0);
+            _lastAuthLogMs = _now;
+        }
     }
 }
 
 void authLoop() {
+    // Run auth processing continuously per library guidance
     authHandler();
     if (DatabasePtr) DatabasePtr->loop();
+
+    // One-time banner when auth becomes ready
+    static bool _authBannerPrinted = false;
+    if (!_authBannerPrinted && firebaseIsReady()) {
+        String uidStr = appPtr ? appPtr->getUid() : String("");
+        Serial.println("================ FIREBASE AUTHENTICATED ================");
+        Serial.printf("Host: %s\n", firebaseHost().c_str());
+        Serial.printf("UID : %s\n", uidStr.c_str());
+        Serial.println("=======================================================");
+        _authBannerPrinted = true;
+    }
 }
 
 bool firebaseIsReady()
@@ -167,6 +209,8 @@ bool firebaseInitUserPath()
             gsFree += userId;
             pathSet = true;
             Serial.println("User path initialized successfully: " + gsFree);
+            // Ensure default tree exists once per boot after auth is ready
+            ensureDefaultTreeIfMissing();
             return true;
         } else {
             Serial.printf("UID fetch attempt %d failed or invalid UID: '%s' (length: %d)\n",
@@ -208,6 +252,51 @@ void printError(int code, const String &msg)
 
 // Function implementations with custom paths and values
 
+// Helper: extract Firebase host from DATABASE_URL for clearer error logs
+static String firebaseHost()
+{
+    static String host;
+    if (host.length() == 0) {
+        String url = String(DATABASE_URL);
+        if (url.startsWith("https://")) url.remove(0, 8);
+        int slash = url.indexOf('/');
+        if (slash >= 0) url = url.substring(0, slash);
+        host = url;
+    }
+    return host;
+}
+
+// Helper: log detailed DB failure context
+static void logDbFailure(const char* op, const String &path)
+{
+    Serial.printf("Firebase %s failed: host=%s path=%s code=%d msg:%s\n",
+                  op,
+                  firebaseHost().c_str(),
+                  path.c_str(),
+                  dbLastErrorCode(),
+                  dbLastErrorMessage().c_str());
+}
+
+// Quick TLS connectivity probe to a given host:443 using current root CA
+static bool quickTlsProbe(const char* host)
+{
+    WiFiClientSecure p;
+    // Use the same trust mechanism as main client (manual CA pinning)
+    p.setCACert(firebase_root_ca);
+    // Short timeout to avoid blocking long
+    p.setTimeout(5000);
+    Serial.printf("TLS probe: connecting to https://%s:443 ... ", host);
+    bool ok = p.connect(host, 443);
+    if (ok) {
+        Serial.println("ok");
+        p.stop();
+        return true;
+    } else {
+        Serial.println("FAILED");
+        return false;
+    }
+}
+
 bool setIntValue(const String &path, int value)
 {
     Serial.print("Set int at " + path + "... ");
@@ -215,7 +304,10 @@ bool setIntValue(const String &path, int value)
     if (status)
         Serial.println("ok");
     else
+    {
         printError(dbLastErrorCode(), dbLastErrorMessage());
+        logDbFailure("set<int>", path);
+    }
     return status;
 }
 
@@ -226,7 +318,10 @@ bool setBoolValue(const String &path, bool value)
     if (status)
         Serial.println("ok");
     else
+    {
         printError(dbLastErrorCode(), dbLastErrorMessage());
+        logDbFailure("set<bool>", path);
+    }
     return status;
 }
 
@@ -237,7 +332,10 @@ bool setFloatValue(const String &path, float value)
     if (status)
         Serial.println("ok");
     else
+    {
         printError(dbLastErrorCode(), dbLastErrorMessage());
+        logDbFailure("set<float>", path);
+    }
     return status;
 }
 
@@ -248,7 +346,10 @@ bool setDoubleValue(const String &path, double value)
     if (status)
         Serial.println("ok");
     else
+    {
         printError(dbLastErrorCode(), dbLastErrorMessage());
+        logDbFailure("set<double>", path);
+    }
     return status;
 }
 
@@ -259,7 +360,10 @@ bool setStringValue(const String &path, const String &value)
     if (status)
         Serial.println("ok");
     else
+    {
         printError(dbLastErrorCode(), dbLastErrorMessage());
+        logDbFailure("set<String>", path);
+    }
     return status;
 }
 
@@ -281,7 +385,10 @@ void deleteFirebasePath(const String &path)
     if (status)
         Serial.println("ok");
     else
+    {
         printError(dbLastErrorCode(), dbLastErrorMessage());
+        logDbFailure("remove", path);
+    }
 }
 
 // Function to print Firebase errors
@@ -292,6 +399,80 @@ void printErrors(int code, const String &message) {
     Serial.println(message);
 }
 //--------------------------------------------------------------------------------------------------------
+
+// Create default tree if missing. Idempotent: only writes when paths are absent or invalid
+void ensureDefaultTreeIfMissing()
+{
+    if (!firebaseIsReady()) return;
+
+    // Timers defaults
+    setDefaultBoolValue(gsFree + timer1, false);
+    setDefaultBoolValue(gsFree + timer2, false);
+    setDefaultBoolValue(gsFree + timer3, false);
+    setDefaultBoolValue(gsFree + timer4, false);
+    setDefaultBoolValue(gsFree + timer5, false);
+    setDefaultStringValue(gsFree + timer7, "");
+
+    // Geyser state defaults
+    setDefaultBoolValue(gsFree + geyser_1, false);
+
+    // Sensor defaults
+    setDefaultFloatValue(gsFree + sensor_1, 204.00f);
+    setDefaultDoubleValue(gsFree + sensor_1_max, 75.00);
+}
+
+// Internal helper to refresh cached config in one go
+static void refreshConfigCacheInternal()
+{
+    if (!firebaseIsReady()) return;
+
+    // Read timers individually (library does not support get<object_t>)
+    configCache.timer04 = dbGetBool(gsFree + timer1);
+    configCache.timer06 = dbGetBool(gsFree + timer2);
+    configCache.timer08 = dbGetBool(gsFree + timer3);
+    configCache.timer16 = dbGetBool(gsFree + timer4);
+    configCache.timer18 = dbGetBool(gsFree + timer5);
+    configCache.customTimer = dbGetString(gsFree + timer7);
+
+    // Max temp
+    configCache.maxTemp1 = dbGetDouble(gsFree + sensor_1_max);
+    if (dbLastErrorCode() != 0 || isnan(configCache.maxTemp1) || configCache.maxTemp1 <= 0.0) {
+        configCache.maxTemp1 = 75.0; // default safeguard
+    }
+}
+
+// Public wrapper to refresh cache at ~10s cadence
+void refreshConfigCache10s()
+{
+    if (!firebaseIsReady()) return;
+    unsigned long nowMs = millis();
+    if (nowMs - configCache.lastRefreshMs >= 10000) {
+        refreshConfigCacheInternal();
+        configCache.lastRefreshMs = nowMs;
+    }
+}
+
+bool getTimerCached(int index)
+{
+    switch (index) {
+        case 0: return configCache.timer04;
+        case 1: return configCache.timer06;
+        case 2: return configCache.timer08;
+        case 3: return configCache.timer16;
+        case 4: return configCache.timer18;
+        default: return false;
+    }
+}
+
+String getCustomTimerCached()
+{
+    return configCache.customTimer;
+}
+
+double getMaxTemp1Cached()
+{
+    return configCache.maxTemp1;
+}
 
 // Helper function for boolean values
 void setDefaultBoolValue(const String &path, bool defaultValue)
@@ -442,6 +623,9 @@ void firebaseUpdateCallback(AsyncResult &aResult) {
             bool geyserState = DatabasePtr->get<bool>(*aClientPtr, path);
             digitalWrite(15, geyserState ? HIGH : LOW);  // Use hardcoded pin value (15)
             Serial.printf("Geyser %s via Firebase (real-time)\n", geyserState ? "ON" : "OFF");
+
+            // Track geyser usage for duration logging
+            trackGeyserUsage(geyser_1, geyserState);
         }
     }
 }
