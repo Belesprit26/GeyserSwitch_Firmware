@@ -8,7 +8,8 @@
 #include "secrets.h"
 #include "leak_detection.h"
 #include "reset_button.h"
-#include <PubSubClient.h>  // For MQTT broker/client functionality
+#include <PubSubClient.h>  // For MQTT broker/client functionality (legacy include)
+#include "mqtt.h"         // Consolidated MQTT module
 
 //----------------------------------------WEBSERVER----------------------------------------------------------
 #include "credentials.h"
@@ -60,10 +61,7 @@ TaskHandle_t syncTaskHandle = NULL;
 // FreeRTOS Mutex for protecting shared resources
 SemaphoreHandle_t controlMutex = NULL;
 
-// MQTT Client and Server (for broker emulation)
-WiFiClient espClient;
-PubSubClient mqttClient(espClient);
-WiFiServer mqttServer(1883);  // MQTT broker on port 1883
+// MQTT now handled in mqtt.{h,cpp}
 
 // Offline Queue Structure (for storing commands/states)
 struct OfflineQueue {
@@ -113,10 +111,8 @@ void setup() {
         ESP.restart();
     }
 
-    // Set up MQTT Broker (ESP32 as AP)
-    WiFi.softAP("GeyserHub", "password123");  // Create AP for clients to connect
-    mqttServer.begin();  // Start MQTT broker server
-    Serial.println("MQTT Broker started on ESP32 AP");
+    // Initialize consolidated MQTT module (AP + broker)
+    mqttns::mqttInit();
 
     // Start FreeRTOS Tasks
     xTaskCreate(mqttTask, "MQTT Task", 4096, NULL, 1, &mqttTaskHandle);       // Priority 1: Medium (communications)
@@ -198,28 +194,8 @@ void setupWebServer() {
 // MQTT Task: Handle broker/client operations
 void mqttTask(void *pvParameters) {
     for (;;) {
-        // Handle incoming MQTT broker clients
-        WiFiClient client = mqttServer.available();
-        if (client) {
-            Serial.println("New MQTT client connected");
-            // Basic MQTT broker emulation: accept connections and handle simple messages
-            while (client.connected()) {
-                if (client.available()) {
-                    String msg = client.readStringUntil('\n');
-                    if (msg.startsWith("PUBLISH geyser/cmd")) {
-                        // Extract command (e.g., "on" or "off")
-                        String cmd = msg.substring(msg.lastIndexOf(' ') + 1);
-                        offlineQueue.enqueue(cmd);  // Queue for control task
-                        Serial.println("MQTT Command Queued: " + cmd);
-                    }
-                }
-                vTaskDelay(100 / portTICK_PERIOD_MS);
-            }
-            client.stop();
-            Serial.println("MQTT client disconnected");
-        }
-
-        vTaskDelay(1000 / portTICK_PERIOD_MS);  // 1s loop
+        mqttns::mqttBrokerTaskLoop();
+        vTaskDelay(200 / portTICK_PERIOD_MS);
     }
 }
 
@@ -228,8 +204,9 @@ void controlTask(void *pvParameters) {
     for (;;) {
         // Process queued MQTT commands (protected by mutex)
         if (xSemaphoreTake(controlMutex, portMAX_DELAY) == pdTRUE) {
-            if (!offlineQueue.isEmpty()) {
-                String cmd = offlineQueue.dequeue();
+            // Consume MQTT commands from central queue
+            {
+                String cmd = mqttns::mqttDequeueCommand();
                 if (cmd == "on") {
                     digitalWrite(15, HIGH);  // Use hardcoded pin
                     Serial.println("Geyser turned ON via MQTT");
