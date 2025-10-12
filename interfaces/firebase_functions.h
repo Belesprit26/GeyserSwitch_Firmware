@@ -19,9 +19,9 @@ extern unsigned long previousMillis;
 extern const long interval;
 
 
-// Path variables - now managed by AppState
-// extern String gsFree;  // → AppState::getGsFree()
-// extern String userId;   // → AppState::getUserId()
+// Global variables now defined in firebase_functions.cpp
+extern String gsFree;
+extern String userId;
 extern String gsPrime;
 extern const String timer1;
 extern const String timer2;
@@ -43,6 +43,7 @@ void authHandler();
 void authLoop();
 bool firebaseIsReady();
 bool firebaseInitUserPath();
+void asyncInitializeDefaults();
 void printError(int code, const String &msg);
 
 // Function declarations with parameters for custom paths and values

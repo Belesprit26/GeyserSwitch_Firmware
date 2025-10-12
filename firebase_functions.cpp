@@ -1,7 +1,5 @@
 #include "interfaces/firebase_functions.h"
 #include "interfaces/tracking.h"
-#include "state/app_state.h"         // Centralized state management
-#include "state/persistence.h"       // State persistence layer
 
 // Enable Firebase features and include the library only in this translation unit
 #ifndef ENABLE_DATABASE
@@ -21,7 +19,7 @@ using namespace firebase_ns;
 #include "interfaces/credentials.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <HTTPClient.h>
+#include <HTTPClient.h> 
 #include "interfaces/notifications.h" 
 
 // Root CA and sensitive config are provided by secrets.h via firebase_functions.h include
@@ -42,9 +40,9 @@ bool controlGeyser1 = false;
 bool controlGeyser2 = false;
 bool controlBothGeysers = false;
 
-// Initialize Firebase path variables - now managed by AppState
-// String gsFree = "/GeyserSwitch"; // → AppState::getGsFree()
-// String userId = "";              // → AppState::getUserId()
+// Initialize Firebase path variables
+String gsFree = "/GeyserSwitch"; // This will be updated with userId after fetching it
+String userId = "";  // Initialize the userId variable
 String gsPrime = "/GeyserSwitch_Prime"; 
 
 // Timers
@@ -111,7 +109,7 @@ void setupFirebase()
 #endif
 
     // Initialize Firebase Authentication with credentials from EEPROM
-    UserAuth user_auth(API_KEY, email, userPassword);
+    UserAuth user_auth(API_KEY, email, userPassword); 
 
     initializeApp(*aClientPtr, *appPtr, getAuth(user_auth), *aResult_no_callback_ptr);
 
@@ -194,18 +192,14 @@ bool firebaseInitUserPath()
     // Retry logic for UID fetch with exponential backoff
     for (int attempt = 0; attempt < maxRetries; attempt++) {
         String uid = appPtr->getUid();
-        AppState::setUserId(uid);
 
         if (uid.length() > 0 && isValidFirebaseUid(uid)) {
             // Valid UID: Construct path safely
-            String gsFree = "/GeyserSwitch";
-            if (!gsFree.endsWith("/")) gsFree += "/";
-            gsFree += uid;
-            AppState::setGsFree(gsFree);
+            userId = uid;
+            gsFree = "/GeyserSwitch/" + uid;
             pathSet = true;
             Serial.println("User path initialized successfully: " + gsFree);
-            // Ensure default tree exists once per boot after auth is ready
-            ensureDefaultTreeIfMissing();
+            // Default tree initialization moved to async background task
             return true;
         } else {
             Serial.printf("UID fetch attempt %d failed or invalid UID: '%s' (length: %d)\n",
@@ -220,6 +214,65 @@ bool firebaseInitUserPath()
     Serial.println("CRITICAL: Failed to initialize user path after " + String(maxRetries) + " retries. Firebase DB operations disabled until resolved.");
     // Optionally send notification here if needed
     return false;
+}
+
+// Async default tree initialization with progress logging
+void asyncInitializeDefaults() {
+    static bool defaultsInitialized = false;
+    static unsigned long lastProgressTime = 0;
+    static int currentStep = 0;
+    
+    if (defaultsInitialized) return;
+    if (!firebaseIsReady()) return;
+    
+    // Progress logging every 2 seconds
+    unsigned long now = millis();
+    if (now - lastProgressTime >= 2000) {
+        Serial.println("Default tree: Initializing (may take 5-10s)...");
+        lastProgressTime = now;
+    }
+    
+    // Initialize defaults one by one to avoid blocking
+    
+    switch (currentStep) {
+        case 0:
+            setDefaultBoolValue(gsFree + String("/Timers/04:00"), false);
+            currentStep++;
+            break;
+        case 1:
+            setDefaultBoolValue(gsFree + String("/Timers/06:00"), false);
+            currentStep++;
+            break;
+        case 2:
+            setDefaultBoolValue(gsFree + String("/Timers/08:00"), false);
+            currentStep++;
+            break;
+        case 3:
+            setDefaultBoolValue(gsFree + String("/Timers/16:00"), false);
+            currentStep++;
+            break;
+        case 4:
+            setDefaultBoolValue(gsFree + String("/Timers/18:00"), false);
+            currentStep++;
+            break;
+        case 5:
+            setDefaultStringValue(gsFree + String("/Timers/CUSTOM"), "");
+            currentStep++;
+            break;
+        case 6:
+            setDefaultBoolValue(gsFree + String("/Geysers/geyser_1/state"), false);
+            currentStep++;
+            break;
+        case 7:
+            setDefaultFloatValue(gsFree + String("/Geysers/geyser_1/sensor_1"), 204.00f);
+            currentStep++;
+            break;
+        case 8:
+            setDefaultDoubleValue(gsFree + String("/Geysers/geyser_1/max_temp"), 75.00);
+            defaultsInitialized = true;
+            Serial.println("Default tree: Complete!");
+            break;
+    }
 }
 
 static void printResult(AsyncResult &aResult)
@@ -466,19 +519,33 @@ void setDefaultDoubleValue(const String &path, double defaultValue)
 
 // Callback function for Firebase real-time updates
 void firebaseUpdateCallback(AsyncResult &aResult) {
+    Serial.println(">>> Firebase callback triggered!");  // Debug: Always log when callback is called
+    Serial.printf("    Available: %d\n", aResult.available());
+    Serial.printf("    Path: %s\n", aResult.path().c_str());
+    
     if (aResult.available() && DatabasePtr && aClientPtr) {  // Safety check for initialized pointers
         // Check if this is an update to the geyser control path
         String path = aResult.path();
-        if (path == AppState::getGsFree() + geyser_1) {
+        String expectedPath = gsFree + geyser_1;
+        Serial.printf("    Expected path: %s\n", expectedPath.c_str());
+        Serial.printf("    Path match: %s\n", (path == expectedPath) ? "YES" : "NO");
+        
+        if (path == expectedPath) {
             // Immediate response to Firebase changes - use same approach as dbGetBool
             bool geyserState = DatabasePtr->get<bool>(*aClientPtr, path);
-            digitalWrite(15, geyserState ? HIGH : LOW);  // TODO: Use geyser_1_pin variable
-            AppState::setGeyserOn(geyserState);  // Update centralized state
+            Serial.printf("    New geyser state: %s\n", geyserState ? "ON" : "OFF");
+            
+            Serial.printf("🔥 FIREBASE CALLBACK: Setting geyser to %s\n", geyserState ? "ON" : "OFF");
+            digitalWrite(15, geyserState ? HIGH : LOW);  // Pin 15 = geyser_1_pin (defined in main sketch)
             Serial.printf("Geyser %s via Firebase (real-time)\n", geyserState ? "ON" : "OFF");
 
             // Track geyser usage for duration logging
             trackGeyserUsage(geyser_1, geyserState);
+        } else {
+            Serial.printf("    Ignoring update to path: %s\n", path.c_str());
         }
+    } else {
+        Serial.println("    Callback triggered but not available or pointers not initialized");
     }
 }
 
@@ -487,7 +554,9 @@ void setupFirebaseListeners() {
     if (DatabasePtr && aClientPtr) {
         Serial.println("Setting up Firebase real-time listeners...");
         // Listen for changes to geyser control
-        DatabasePtr->get(*aClientPtr, AppState::getGsFree() + geyser_1, firebaseUpdateCallback, true); // true = keep listening
+        String listenerPath = gsFree + geyser_1;
+        Serial.printf("  Listening on path: %s\n", listenerPath.c_str());
+        DatabasePtr->get(*aClientPtr, listenerPath, firebaseUpdateCallback, true); // true = keep listening
         Serial.println("Firebase real-time listener active for geyser control");
     } else {
         Serial.println("Firebase not initialized - cannot setup listeners");

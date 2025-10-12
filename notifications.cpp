@@ -1,7 +1,6 @@
 #include "interfaces/notifications.h"
 #include "interfaces/secrets.h"
-#include "interfaces/firebase_functions.h"
-#include "state/app_state.h" // for firebaseIsReady(), userId
+#include "interfaces/firebase_functions.h" // for firebaseIsReady(), userId
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -33,7 +32,7 @@ void sendNotification(String bodyMessage, String dataValue) {
     payload += "\"title\":\"GeyserSwitch Alert\",";
     payload += "\"body\":\"" + bodyMessage + "\",";
     payload += "\"data\": \"" + dataValue + "\",";
-    payload += "\"userId\":\"" + (firebaseIsReady() ? AppState::getUserId() : String("")) + "\",";
+    payload += "\"userId\":\"" + (firebaseIsReady() ? userId : String("")) + "\",";
     payload += "\"authKey\":\"" + String(kAuthKey) + "\"";
     payload += "}";
 

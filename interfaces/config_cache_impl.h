@@ -6,7 +6,6 @@
 
 #include "interfaces/config_cache.h"
 #include "interfaces/firebase_functions.h"
-#include "state/app_state.h"
 
 namespace {
 struct ConfigCache {
@@ -23,7 +22,7 @@ struct ConfigCache {
 void refreshInternal()
 {
     if (!firebaseIsReady()) return;
-    String gsFree = AppState::getGsFree();
+        String gsFree = gsFree;
     cache.timer04 = dbGetBool(gsFree + String("/Timers/04:00"));
     cache.timer06 = dbGetBool(gsFree + String("/Timers/06:00"));
     cache.timer08 = dbGetBool(gsFree + String("/Timers/08:00"));
@@ -40,7 +39,7 @@ void refreshInternal()
 void ensureDefaultTreeIfMissing()
 {
     if (!firebaseIsReady()) return;
-    String gsFree = AppState::getGsFree();
+        String gsFree = gsFree;
     setDefaultBoolValue(gsFree + String("/Timers/04:00"), false);
     setDefaultBoolValue(gsFree + String("/Timers/06:00"), false);
     setDefaultBoolValue(gsFree + String("/Timers/08:00"), false);

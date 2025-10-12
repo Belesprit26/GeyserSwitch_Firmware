@@ -1,8 +1,9 @@
 #include "interfaces/temp_control.h"
 #include "interfaces/firebase_functions.h"
 #include "interfaces/date_util.h"
-#include "state/app_state.h"         // Centralized state management
-#include "state/persistence.h"       // State persistence layer
+
+// Temperature sensor variable
+static double Temperature1 = 0.0;
 #include <WiFi.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -16,7 +17,7 @@ OneWire oneWire(ONE_WIRE_BUS_1);
 DallasTemperature sensors(&oneWire);
 
 // Global variables to store temperatures - now managed by AppState
-// double Temperature1 = 0.0; // → AppState::getTemperature1() and AppState::setTemperature1()
+// Temperature sensor variable now defined as static in this file
 
 void setupTempSensor() {
     // Initialize DallasTemperature sensors
@@ -39,8 +40,8 @@ double readTemperatureSensor1() {
     }
 
     // Store and return temperature
-    AppState::setTemperature1(static_cast<double>(tempC));
-    return AppState::getTemperature1();
+    Temperature1 = static_cast<double>(tempC);
+    return Temperature1;
 }
 
 // Function to read temperature from sensor 2
@@ -53,7 +54,7 @@ void controlGeyserBasedOnMaxTemp() {
 
     // Update the current temperatures in Firebase for both sensors (only if finite and Firebase is ready)
     if (firebaseIsReady() && !isnan(currentTemp1) && !isinf(currentTemp1)) {
-        setFloatValue(AppState::getGsFree() + sensor_1, currentTemp1);
+        setFloatValue(gsFree + sensor_1, currentTemp1);
     } else if (!firebaseIsReady()) {
         Serial.println("Firebase not ready - skipping temperature upload");
     } else {
@@ -74,14 +75,15 @@ void controlGeyserBasedOnMaxTemp() {
         // Removed sensor 2 logs
 
         // Fetch the current status of geysers
-        bool geyserStatus1 = AppState::isGeyserOn(); // Check current geyser 1 status from centralized state
+        bool geyserStatus1 = (digitalRead(geyser_1_pin) == HIGH); // Check current geyser 1 status from pin
         // Removed geyser 2 status
 
         // Controlling geyser based on sensor 1
         // Skip temperature control if using default 204.00°C (sensor not connected)
         if (currentTemp1 != 204.00 && currentTemp1 >= maxTemp1 && geyserStatus1) {
-            setBoolValue(AppState::getGsFree() + geyser_1, false);  // Turn off geyser 1
-            AppState::setGeyserOn(false);  // Update centralized state
+            Serial.printf("🌡️ TEMP CONTROL: Temperature %.2f°C >= Max %.2f°C - Turning geyser OFF\n", currentTemp1, maxTemp1);
+            setBoolValue(gsFree + geyser_1, false);  // Turn off geyser 1
+            digitalWrite(geyser_1_pin, LOW);  // Turn off geyser pin directly
             sendNotification("Geyser 1 has reached the desired temperature: " +
                              String(currentTemp1, 2) + "°C" + " . The geyser has been turned off", "at: " + realTime);
             Serial.println("Geyser 1 turned off due to sensor 1 exceeding max temperature.");

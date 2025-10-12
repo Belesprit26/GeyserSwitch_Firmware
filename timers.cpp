@@ -3,16 +3,20 @@
 #include "interfaces/date_util.h"
 #include "interfaces/temp_control.h"
 #include "interfaces/tracking.h"
-#include "state/app_state.h"         // Centralized state management
-#include "state/persistence.h"       // State persistence layer
+
+// Timer flags to prevent re-triggering
+static bool actionTriggeredTodayGeyser[6] = {false, false, false, false, false, false};
+static bool customActionTriggered = false;
+
+// Geyser pin (defined in main sketch)
+extern const int geyser_1_pin;
 
 // Global variables to store the trigger times (hours only) and states
 const String triggerHours[] = {"04", "06", "08", "16", "18"};
 const String timerPaths[] = {"/Timers/04:00", "/Timers/06:00", "/Timers/08:00", "/Timers/16:00", "/Timers/18:00"};
 
 // Timer trigger states - now managed by AppState
-// bool actionTriggeredTodayGeyser[] = {false, false, false, false, false, false}; // → AppState::getTimerFlag(i)
-// bool customActionTriggered = false; // → AppState::getCustomTimerFlag()
+// Timer flags now defined as static variables in this file
 
 // Custom timer path
 const String customTimerPath = "/Timers/CUSTOM";
@@ -28,54 +32,59 @@ void controlGeyserWithTimers() {
     //Serial.println("Full Time: "+ currentHourMinute);
     //Serial.println("-----------------------------------");
 
+    // Refresh cache ONCE before checking all timers
+    refreshConfigCache10s();
+
     // Regular timers logic
+    Serial.printf("🕐 TIMER CHECK: Current time %s - Checking %d timers\n", currentHourMinute.c_str(), 6);
     for (int i = 0; i < 6; i++) {
-        Serial.print("Timer ");
-        Serial.print(i + 1);
-        Serial.print(" (Path: ");
-        Serial.print(timerPaths[i]);
-        Serial.print("): ");
-        refreshConfigCache10s();
         bool timerVal = getTimerCached(i);
-        Serial.println(timerVal);
+        Serial.printf("  Timer[%d] %s: %s\n", i, triggerHours[i].c_str(), timerVal ? "ON" : "OFF");
+        
+        // Only print when timer state changes or triggers
+        if (timerVal) {
+            Serial.printf("Timer %d (%s): ON\n", i + 1, timerPaths[i].c_str());
+        }
 
         // Check if the timer is active and the current hour matches the trigger hour
         if (timerVal && currentHour == triggerHours[i]) {
-            if (!AppState::getTimerFlag(i)) {
-                setBoolValue(AppState::getGsFree() + geyser_1, true);  // Turn on the geyser
-                digitalWrite(15, HIGH);  // TODO: Use geyser_1_pin variable
-                AppState::setGeyserOn(true);  // Update centralized state
+            if (!actionTriggeredTodayGeyser[i]) {
+                Serial.printf("⏰ TIMER TRIGGER: Timer[%d] at %s:00 - Turning geyser ON\n", i, triggerHours[i].c_str());
+                setBoolValue(gsFree + geyser_1, true);  // Turn on the geyser
+                digitalWrite(geyser_1_pin, HIGH);
                 trackGeyserUsage(geyser_1, true);  // Track usage
                 Serial.println("Geysers turned on at " + triggerHours[i] + ":00");
-                AppState::setTimerFlag(i, true);  // Prevent re-triggering within the same hour
+                actionTriggeredTodayGeyser[i] = true;  // Prevent re-triggering within the same hour
                 sendNotification( triggerHours[i] + ":00" + " Timer Alert: Your geyser(s) has turned on.", "Time: " + currentHourMinute);
                 Serial.println("STANDARD TIMER TRIGGERED AT: " + triggerHours[i] + ":00" );
             }
         } else if (currentHour != triggerHours[i]) {
-            AppState::setTimerFlag(i, false);  // Reset trigger state for the next time the hour matches
+            actionTriggeredTodayGeyser[i] = false;  // Reset trigger state for the next time the hour matches
         }
     }
 
     // Custom timer logic
-    String customTimer = dbGetString(AppState::getGsFree() + customTimerPath);  // Read the custom timer value
+    String customTimer = getCustomTimerCached();  // Use cached value instead of direct Firebase read
     customTimer.trim();  // Trim any leading/trailing spaces from Firebase value
 
-    Serial.println("Custom time from Firebase: [" + customTimer + "]");
-    Serial.println("Current time: [" + currentHourMinute + "]");
+    Serial.printf("🕐 CUSTOM TIMER: [%s] Current: [%s] Match: %s\n", 
+                  customTimer.length() > 0 ? customTimer.c_str() : "EMPTY",
+                  currentHourMinute.c_str(),
+                  (customTimer.length() > 0 && customTimer == currentHourMinute) ? "YES" : "NO");
 
     if (customTimer.length() > 0 && customTimer == currentHourMinute) { // Check if the custom timer matches the current time
-        if (!AppState::getCustomTimerFlag()) {
-            setBoolValue(AppState::getGsFree() + geyser_1, true);  // Turn on geyser
-            digitalWrite(15, HIGH);  // TODO: Use geyser_1_pin variable
-            AppState::setGeyserOn(true);  // Update centralized state
+        if (!customActionTriggered) {
+            Serial.printf("⏰ CUSTOM TIMER TRIGGER: %s - Turning geyser ON\n", customTimer.c_str());
+            setBoolValue(gsFree + geyser_1, true);  // Turn on geyser
+            digitalWrite(geyser_1_pin, HIGH);
             trackGeyserUsage(geyser_1, true);  // Track usage
             Serial.println("Geysers turned on at custom time: " + customTimer);
-            AppState::setCustomTimerFlag(true);  // Prevent re-triggering within the same minute
+            customActionTriggered = true;  // Prevent re-triggering within the same minute
             sendNotification(customTimer +" Custom Timer Alert: Your geyser(s) has turned on.", "Time: " + currentHourMinute);
             Serial.println("CUSTOM TIMER TRIGGERED AT: " + customTimer);
             Serial.println("-----------------------------------");
         }
     } else if (customTimer != currentHourMinute) {
-        AppState::setCustomTimerFlag(false);  // Reset trigger state for the next time the time matches
+        customActionTriggered = false;  // Reset trigger state for the next time the time matches
     }
 }
