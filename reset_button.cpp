@@ -1,5 +1,5 @@
-#include "reset_button.h"
-#include "credentials.h"
+#include "interfaces/reset_button.h"
+#include "interfaces/credentials.h"
 
 // Static variables for button state (persistent across calls)
 static bool isButtonPressed = false;

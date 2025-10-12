@@ -1,4 +1,5 @@
-#include "credentials.h"
+#include "interfaces/credentials.h"
+#include "state/persistence.h"       // State persistence layer
 
 String iSSID = "";
 String iPASSWORD = "";
@@ -7,56 +8,28 @@ String PASSWORD = "";
 
 
 void initEEPROM() {
+    // Initialize EEPROM for backward compatibility
     EEPROM.begin(512);  // Initialize EEPROM with 512 bytes
     delay(10);
+    
+    // Migrate credentials from EEPROM to Preferences if needed
+    Persistence::migrateCredentialsFromEEPROM();
 }
 
 void readCredentials(String &ssid, String &password, String &email, String &userPassword) {
-    ssid = "";
-    password = "";
-    email = "";
-    userPassword = "";
-
-    // Reading SSID from EEPROM (with validation of printable characters)
-    for (int i = 0; i < 32; ++i) {
-        char readChar = EEPROM.read(i);
-        if (isPrintable(readChar) && readChar != '\0') {
-            ssid += readChar;
-            iSSID = ssid;
-        }
-    }
-
-    // Reading password from EEPROM
-    for (int i = 32; i < 64; ++i) {
-        char readChar = EEPROM.read(i);
-        if (isPrintable(readChar) && readChar != '\0') {
-            password += readChar;
-            iPASSWORD = password;
-        }
-    }
-
-    // Reading email from EEPROM
-    for (int i = 64; i < 192; ++i) {
-        char readChar = EEPROM.read(i);
-        if (isPrintable(readChar) && readChar != '\0') {
-            email += readChar;
-            EMAIL = email;
-        }
-    }
-
-    // Reading user password from EEPROM
-    for (int i = 192; i < 256; ++i) {
-        char readChar = EEPROM.read(i);
-        if (isPrintable(readChar) && readChar != '\0') {
-            userPassword += readChar;
-            PASSWORD = userPassword;
-        }
-    }
+    // Use Preferences API for credential storage
+    Persistence::loadCredentials(ssid, password, email, userPassword);
+    
+    // Update global variables for backward compatibility
+    iSSID = ssid;
+    iPASSWORD = password;
+    EMAIL = email;
+    PASSWORD = userPassword;
 
     // Debugging logs (print once per boot to avoid repetition)
     static bool printedOnce = false;
     if (!printedOnce) {
-        Serial.println("Credentials read from EEPROM:");
+        Serial.println("Credentials read from Preferences:");
         Serial.print("SSID: "); Serial.println(ssid);
         Serial.print("Password: "); Serial.println(password);
         Serial.print("Email: "); Serial.println(email);
@@ -67,62 +40,29 @@ void readCredentials(String &ssid, String &password, String &email, String &user
 }
 
 void saveCredentials(const String &ssid, const String &password, const String &email, const String &userPassword) {
-    // Write SSID to EEPROM with padding
-    for (int i = 0; i < 32; ++i) {
-        if (i < ssid.length()) {
-            EEPROM.write(i, ssid[i]);
-        } else {
-            EEPROM.write(i, 0);  // Clear remaining space
-        }
-    }
-
-    // Write password to EEPROM with padding
-    for (int i = 0; i < 32; ++i) {  // Corrected to write within allocated space
-        if (i < password.length()) {
-            EEPROM.write(32 + i, password[i]);
-        } else {
-            EEPROM.write(32 + i, 0);  // Clear remaining space
-        }
-    }
-
-    // Write email to EEPROM with padding
-    for (int i = 0; i < 128; ++i) {  // Corrected to write within allocated space
-        if (i < email.length()) {
-            EEPROM.write(64 + i, email[i]);
-        } else {
-            EEPROM.write(64 + i, 0);  // Clear remaining space
-        }
-    }
-
-    // Write user password to EEPROM with padding
-    for (int i = 0; i < 64; ++i) {  // Corrected to write within allocated space
-        if (i < userPassword.length()) {
-            EEPROM.write(192 + i, userPassword[i]);
-        } else {
-            EEPROM.write(192 + i, 0);  // Clear remaining space
-        }
-    }
-
-    // Commit changes and check for success
-    if (EEPROM.commit()) {
-        Serial.println("Credentials saved to EEPROM successfully!");
-    } else {
-        Serial.println("EEPROM commit failed.");
-    }
+    // Use Preferences API for credential storage
+    Persistence::saveCredentials(ssid, password, email, userPassword);
+    
+    // Update global variables for backward compatibility
+    iSSID = ssid;
+    iPASSWORD = password;
+    EMAIL = email;
+    PASSWORD = userPassword;
+    
+    Serial.println("Credentials saved to Preferences successfully!");
 }
 
 void eraseCredentials() {
-    // Clear EEPROM values
-    for (int i = 0; i < 256; ++i) {
-        EEPROM.write(i, 0);
-    }
-
-    // Commit changes and check for success
-    if (EEPROM.commit()) {
-        Serial.println("EEPROM cleared successfully!");
-    } else {
-        Serial.println("Failed to clear EEPROM.");
-    }
+    // Use Preferences API for credential erasure
+    Persistence::eraseCredentials();
+    
+    // Clear global variables for backward compatibility
+    iSSID = "";
+    iPASSWORD = "";
+    EMAIL = "";
+    PASSWORD = "";
+    
+    Serial.println("Credentials erased from Preferences successfully!");
 }
 
 // Updated function with timeout parameter
@@ -156,7 +96,7 @@ bool checkAndConnectWiFi(WebServer &server, unsigned long timeout) {
     } else {
         static bool warnedNoCreds = false;
         if (!warnedNoCreds) {
-            Serial.println("No valid Wi-Fi credentials found in EEPROM.");
+            Serial.println("No valid Wi-Fi credentials found in Preferences.");
             warnedNoCreds = true;
         }
         return false;

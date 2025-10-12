@@ -1,7 +1,8 @@
-#include "tracking.h"
-#include "firebase_functions.h" 
-#include "ota.h"
-#include "date_util.h"    // Use your date_util library for time and date functions
+#include "interfaces/tracking.h"
+#include "interfaces/firebase_functions.h" 
+#include "interfaces/ota.h"
+#include "interfaces/date_util.h"    // Use your date_util library for time and date functions
+#include "state/app_state.h"
 #include <Arduino.h>
 #include <Preferences.h>  // Include Preferences library
 
@@ -63,7 +64,7 @@ void trackGeyserUsage(const String& geyserPath, bool currentState) {
         String cycleKey = "Cycle_" + String(now);
         
         // Build the Firebase path for this cycle:
-        String cyclePath = gsFree + "/Records/GeyserDuration/" + currentDate + "/1/" + cycleKey;
+        String cyclePath = AppState::getGsFree() + "/Records/GeyserDuration/" + currentDate + "/1/" + cycleKey;
         
         // Log the cycle details to Firebase.
         setStringValue(cyclePath + "/StartTime", tracker->startTimeStr);
@@ -79,7 +80,7 @@ void trackGeyserUsage(const String& geyserPath, bool currentState) {
         
         
         // --- Update the Daily Total Run Time Accumulator ---
-        String totalRunTimePath = gsFree + "/Records/GeyserDuration/" + currentDate + "/1/TotalRunTime";
+        String totalRunTimePath = AppState::getGsFree() + "/Records/GeyserDuration/" + currentDate + "/1/TotalRunTime";
 
         int currentTotal = dbGetInt(totalRunTimePath.c_str());
         int newTotal = currentTotal + durationSec;

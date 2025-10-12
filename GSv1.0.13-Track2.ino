@@ -1,18 +1,19 @@
 #include <Arduino.h>
-#include "date_util.h"
-#include "firebase_functions.h"
-#include "temp_control.h"
-#include "timers.h" 
-#include "ota.h" 
-#include "tracking.h"
-#include "secrets.h"
-#include "leak_detection.h"
-#include "reset_button.h"
-#include <PubSubClient.h>  // For MQTT broker/client functionality (legacy include)
-#include "mqtt.h"         // Consolidated MQTT module
+#include "interfaces/date_util.h"
+#include "interfaces/firebase_functions.h"
+#include "interfaces/temp_control.h"
+#include "interfaces/timers.h" 
+#include "interfaces/ota.h" 
+#include "interfaces/tracking.h"
+#include "interfaces/secrets.h"
+#include "interfaces/leak_detection.h"
+#include "interfaces/reset_button.h"
+#include "interfaces/mqtt.h"         // Consolidated MQTT module
+#include "state/app_state.h"         // Centralized state management
+#include "state/persistence.h"       // State persistence layer
 
 //----------------------------------------WEBSERVER----------------------------------------------------------
-#include "credentials.h"
+#include "interfaces/credentials.h"
 #include <WebServer.h>
 
 // Constants for Reset Button
@@ -48,10 +49,10 @@ void setupTempSensor();
 
 
 
-// Runtime flags
-static bool wifiConnected = false;
-static bool firebaseStarted = false;
-static bool postFirebaseInitDone = false;
+// Runtime flags - now managed by AppState
+// static bool wifiConnected = false;        // → AppState::setWifiConnected()
+// static bool firebaseStarted = false;       // → AppState::setFirebaseReady()
+// static bool postFirebaseInitDone = false; // → AppState::setPostFirebaseInitDone()
 
 // FreeRTOS Task Handles
 TaskHandle_t mqttTaskHandle = NULL;
@@ -63,17 +64,7 @@ SemaphoreHandle_t controlMutex = NULL;
 
 // MQTT now handled in mqtt.{h,cpp}
 
-// Offline Queue Structure (for storing commands/states)
-struct OfflineQueue {
-    String commands[10];  // Simple array for queued MQTT commands
-    int head = 0;
-    int tail = 0;
-    bool isFull() { return (tail + 1) % 10 == head; }
-    bool isEmpty() { return head == tail; }
-    void enqueue(String cmd) { if (!isFull()) { commands[tail] = cmd; tail = (tail + 1) % 10; } }
-    String dequeue() { if (!isEmpty()) { String cmd = commands[head]; head = (head + 1) % 10; return cmd; } return ""; }
-};
-OfflineQueue offlineQueue;
+// OfflineQueue removed - using mqtt.h CommandQueue instead
 
 
 void setup() {
@@ -85,6 +76,18 @@ void setup() {
     }
     Serial.println("Boot start");
     pinMode(rstButtonPin, INPUT_PULLUP);  // Setup the reset button with pull-up resistor
+
+    // Initialize centralized state management
+    AppState::init();
+    Persistence::init();
+    
+    // Load state from NVS (critical state restored immediately)
+    Persistence::loadAllState();
+    Serial.println("State loaded from NVS");
+    
+    // Start auto-save task for state persistence
+    Persistence::startAutoSaveTask();
+    Serial.println("Auto-save task started");
 
     // Early LED setup for visibility
     pinMode(geyser_1_pin, OUTPUT);
@@ -118,6 +121,7 @@ void setup() {
     xTaskCreate(mqttTask, "MQTT Task", 4096, NULL, 1, &mqttTaskHandle);       // Priority 1: Medium (communications)
     xTaskCreate(controlTask, "Control Task", 8192, NULL, 2, &controlTaskHandle); // Priority 2: High (critical control)
     xTaskCreate(syncTask, "Sync Task", 8192, NULL, 0, &syncTaskHandle);         // Priority 0: Low (background sync) - Increased stack for Firebase operations
+    xTaskCreate(persistenceTask, "Persistence Task", 4096, NULL, 0, NULL);        // Priority 0: Low (background persistence)
 }
 
 void loop() {
@@ -129,9 +133,10 @@ void loop() {
     authLoop();
     
     // Wi-Fi STA connection (for Firebase/MQTT app sync)
-    if (!wifiConnected) {
-        wifiConnected = checkAndConnectWiFi(server, 1500);
-        if (wifiConnected) {
+    if (!AppState::isWifiConnected()) {
+        bool connected = checkAndConnectWiFi(server, 1500);
+        AppState::setWifiConnected(connected);
+        if (connected) {
             Serial.println("Wi-Fi connected - switching to STA mode");
             WiFi.softAPdisconnect(true);
             WiFi.mode(WIFI_STA);
@@ -140,7 +145,7 @@ void loop() {
     }
 
     // If no STA, keep AP for local MQTT/config
-    if (!wifiConnected) {
+    if (!AppState::isWifiConnected()) {
         static bool apStarted = false;
         if (!apStarted) {
             WiFi.disconnect(true);
@@ -208,10 +213,12 @@ void controlTask(void *pvParameters) {
             {
                 String cmd = mqttns::mqttDequeueCommand();
                 if (cmd == "on") {
-                    digitalWrite(15, HIGH);  // Use hardcoded pin
+                    digitalWrite(geyser_1_pin, HIGH);  // Use variable pin
+                    AppState::setGeyserOn(true);       // Update centralized state
                     Serial.println("Geyser turned ON via MQTT");
                 } else if (cmd == "off") {
-                    digitalWrite(15, LOW);  // Use hardcoded pin
+                    digitalWrite(geyser_1_pin, LOW);  // Use variable pin
+                    AppState::setGeyserOn(false);     // Update centralized state
                     Serial.println("Geyser turned OFF via MQTT");
                 }
             }
@@ -236,12 +243,15 @@ void syncTask(void *pvParameters) {
     for (;;) {
         // Check if Wi-Fi is connected
         bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+        AppState::setWifiConnected(wifiConnected);
 
         // Initialize Firebase when Wi-Fi connects (only once)
         if (wifiConnected && !firebaseInitialized) {
             Serial.println("Wi-Fi connected - initializing Firebase...");
             // Ensure NTP time is synced before any TLS/Firebase operations
             initializeAndSyncTime(realDate, realTime);
+            AppState::setRealTime(realTime);
+            AppState::setRealDate(realDate);
             setupFirebase();
             firebaseInitialized = true;
             Serial.println("Firebase initialization attempted");
@@ -253,20 +263,22 @@ void syncTask(void *pvParameters) {
         }
 
         bool isOnline = (wifiConnected && firebaseIsReady());
+        AppState::setFirebaseReady(firebaseIsReady());
 
         // Ensure per-user base path is initialized once auth is ready
         static bool userPathInit = false;
         if (wifiConnected && firebaseIsReady() && !userPathInit) {
             if (firebaseInitUserPath()) {
                 userPathInit = true;
+                AppState::setPostFirebaseInitDone(true);
             }
         }
 
         if (isOnline && userPathInit && !wasOnline) {
             Serial.println("Back online - syncing queued data to Firebase");
             // Sync current geyser state immediately
-            bool currentState = digitalRead(geyser_1_pin) == HIGH;
-            if (setBoolValue(gsFree + geyser_1, currentState)) {
+            bool currentState = AppState::isGeyserOn();
+            if (setBoolValue(AppState::getGsFree() + geyser_1, currentState)) {
                 Serial.println("Geyser state synced successfully");
             } else {
                 Serial.println("Failed to sync geyser state - will retry");
@@ -288,8 +300,10 @@ void syncTask(void *pvParameters) {
                 Serial.println("Performing periodic Firebase sync");
                 // Sync time and update records (no geyser polling needed - listeners handle it)
                 initializeAndSyncTime(realDate, realTime);
-                if (setStringValue(gsFree + updateRecords + "/updateDate", realDate) &&
-                    setStringValue(gsFree + updateRecords + "/updateTime", realTime)) {
+                AppState::setRealTime(realTime);
+                AppState::setRealDate(realDate);
+                if (setStringValue(AppState::getGsFree() + updateRecords + "/updateDate", realDate) &&
+                    setStringValue(AppState::getGsFree() + updateRecords + "/updateTime", realTime)) {
                     Serial.println("Time and records synced successfully");
                 } else {
                     Serial.println("Failed to sync time/records - will retry next cycle");
@@ -311,5 +325,21 @@ void syncTask(void *pvParameters) {
                 xSemaphoreGive(controlMutex);
             }
         }
+    }
+}
+
+// Persistence Task: Handle non-critical state persistence
+void persistenceTask(void *pvParameters) {
+    const unsigned long persistenceInterval = 30000; // 30 seconds
+    static unsigned long lastPersistenceTime = 0;
+    
+    for (;;) {
+        // Save non-critical state every 30 seconds
+        if (millis() - lastPersistenceTime >= persistenceInterval) {
+            Persistence::saveNonCriticalState();
+            lastPersistenceTime = millis();
+        }
+        
+        vTaskDelay(5000 / portTICK_PERIOD_MS); // Check every 5 seconds
     }
 }

@@ -1,5 +1,7 @@
-#include "firebase_functions.h"
-#include "tracking.h"
+#include "interfaces/firebase_functions.h"
+#include "interfaces/tracking.h"
+#include "state/app_state.h"         // Centralized state management
+#include "state/persistence.h"       // State persistence layer
 
 // Enable Firebase features and include the library only in this translation unit
 #ifndef ENABLE_DATABASE
@@ -14,13 +16,13 @@
 
 #include <FirebaseClient.h>
 using namespace firebase_ns;
-#include "date_util.h"
-#include "timers.h"
-#include "credentials.h"
+#include "interfaces/date_util.h"
+#include "interfaces/timers.h"
+#include "interfaces/credentials.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-#include <cctype>  // For isalnum 
+#include "interfaces/notifications.h" 
 
 // Root CA and sensitive config are provided by secrets.h via firebase_functions.h include
 
@@ -40,9 +42,9 @@ bool controlGeyser1 = false;
 bool controlGeyser2 = false;
 bool controlBothGeysers = false;
 
-// Initialize Firebase path variables
-String gsFree = "/GeyserSwitch"; // This will be updated with userId after fetching it
-String userId = "";  // Initialize the userId variable
+// Initialize Firebase path variables - now managed by AppState
+// String gsFree = "/GeyserSwitch"; // → AppState::getGsFree()
+// String userId = "";              // → AppState::getUserId()
 String gsPrime = "/GeyserSwitch_Prime"; 
 
 // Timers
@@ -66,23 +68,13 @@ const String records = "/Records/LastBoot";
 // Last Updated
 const String updateRecords = "/Records/LastUpdate";
 
-// In-memory config cache refreshed every 10 seconds
-static struct ConfigCache {
-    bool timer04 = false;
-    bool timer06 = false;
-    bool timer08 = false;
-    bool timer16 = false;
-    bool timer18 = false;
-    String customTimer; // HH:MM or empty
-    double maxTemp1 = 75.0; // sensible default
-    unsigned long lastRefreshMs = 0;
-} configCache;
+// Config cache moved to interfaces/config_cache.cpp
 
 // Forward declarations for local helpers
 static void printResult(AsyncResult &aResult);
 static String firebaseHost();
 static bool quickTlsProbe(const char* host);
-static void refreshConfigCacheInternal();
+// cache refresh implemented in interfaces/config_cache.cpp
 
 // Define the rest of the functions, e.g., setupFirebase(), authHandler(), etc.
 void setupFirebase()
@@ -201,12 +193,15 @@ bool firebaseInitUserPath()
 
     // Retry logic for UID fetch with exponential backoff
     for (int attempt = 0; attempt < maxRetries; attempt++) {
-        userId = appPtr->getUid();
+        String uid = appPtr->getUid();
+        AppState::setUserId(uid);
 
-        if (userId.length() > 0 && isValidFirebaseUid(userId)) {
+        if (uid.length() > 0 && isValidFirebaseUid(uid)) {
             // Valid UID: Construct path safely
+            String gsFree = "/GeyserSwitch";
             if (!gsFree.endsWith("/")) gsFree += "/";
-            gsFree += userId;
+            gsFree += uid;
+            AppState::setGsFree(gsFree);
             pathSet = true;
             Serial.println("User path initialized successfully: " + gsFree);
             // Ensure default tree exists once per boot after auth is ready
@@ -214,7 +209,7 @@ bool firebaseInitUserPath()
             return true;
         } else {
             Serial.printf("UID fetch attempt %d failed or invalid UID: '%s' (length: %d)\n",
-                          attempt + 1, userId.c_str(), userId.length());
+                          attempt + 1, uid.c_str(), uid.length());
             if (attempt < maxRetries - 1) {
                 delay(1000 * (attempt + 1));  // Exponential backoff: 1s, 2s, 3s
             }
@@ -400,79 +395,7 @@ void printErrors(int code, const String &message) {
 }
 //--------------------------------------------------------------------------------------------------------
 
-// Create default tree if missing. Idempotent: only writes when paths are absent or invalid
-void ensureDefaultTreeIfMissing()
-{
-    if (!firebaseIsReady()) return;
-
-    // Timers defaults
-    setDefaultBoolValue(gsFree + timer1, false);
-    setDefaultBoolValue(gsFree + timer2, false);
-    setDefaultBoolValue(gsFree + timer3, false);
-    setDefaultBoolValue(gsFree + timer4, false);
-    setDefaultBoolValue(gsFree + timer5, false);
-    setDefaultStringValue(gsFree + timer7, "");
-
-    // Geyser state defaults
-    setDefaultBoolValue(gsFree + geyser_1, false);
-
-    // Sensor defaults
-    setDefaultFloatValue(gsFree + sensor_1, 204.00f);
-    setDefaultDoubleValue(gsFree + sensor_1_max, 75.00);
-}
-
-// Internal helper to refresh cached config in one go
-static void refreshConfigCacheInternal()
-{
-    if (!firebaseIsReady()) return;
-
-    // Read timers individually (library does not support get<object_t>)
-    configCache.timer04 = dbGetBool(gsFree + timer1);
-    configCache.timer06 = dbGetBool(gsFree + timer2);
-    configCache.timer08 = dbGetBool(gsFree + timer3);
-    configCache.timer16 = dbGetBool(gsFree + timer4);
-    configCache.timer18 = dbGetBool(gsFree + timer5);
-    configCache.customTimer = dbGetString(gsFree + timer7);
-
-    // Max temp
-    configCache.maxTemp1 = dbGetDouble(gsFree + sensor_1_max);
-    if (dbLastErrorCode() != 0 || isnan(configCache.maxTemp1) || configCache.maxTemp1 <= 0.0) {
-        configCache.maxTemp1 = 75.0; // default safeguard
-    }
-}
-
-// Public wrapper to refresh cache at ~10s cadence
-void refreshConfigCache10s()
-{
-    if (!firebaseIsReady()) return;
-    unsigned long nowMs = millis();
-    if (nowMs - configCache.lastRefreshMs >= 10000) {
-        refreshConfigCacheInternal();
-        configCache.lastRefreshMs = nowMs;
-    }
-}
-
-bool getTimerCached(int index)
-{
-    switch (index) {
-        case 0: return configCache.timer04;
-        case 1: return configCache.timer06;
-        case 2: return configCache.timer08;
-        case 3: return configCache.timer16;
-        case 4: return configCache.timer18;
-        default: return false;
-    }
-}
-
-String getCustomTimerCached()
-{
-    return configCache.customTimer;
-}
-
-double getMaxTemp1Cached()
-{
-    return configCache.maxTemp1;
-}
+// ensureDefaultTreeIfMissing, refreshConfigCache10s and getters are implemented in interfaces/config_cache.cpp
 
 // Helper function for boolean values
 void setDefaultBoolValue(const String &path, bool defaultValue)
@@ -539,89 +462,18 @@ void setDefaultDoubleValue(const String &path, double defaultValue)
 }
 
 ///////=============================================================================================================================
-// ------------------- Notification Function Implementations -------------------
-
-// Function to send notification via Cloud Function
-void sendNotification(String bodyMessage, String dataValue) {
-    if (WiFi.status() == WL_CONNECTED) {
-        WiFiClientSecure client;
-        
-        // Set the Root CA certificate for SSL verification
-        client.setCACert(firebase_root_ca);
-
-        HTTPClient https;
-
-        // Cloud Function URL
-        // It's already defined globally, so no need to redeclare here
-        const char* cloudFunctionUrl = "https://us-central1-geyserswitch-bloc.cloudfunctions.net/sendNotificationFromESP32";
-        const char* authKey = "geyserswitch-bloc-orange";  // Ensure this matches the key in your Cloud Function
-
-        // Initialize HTTPS connection
-        if (!https.begin(client, cloudFunctionUrl)) {
-            Serial.println("Unable to connect to Cloud Function URL");
-            return;
-        }
-        
-        https.addHeader("Content-Type", "application/json");
-
-        // Prepare JSON payload
-        String payload = "{";
-        payload += "\"title\":\"GeyserSwitch Alert\",";
-        payload += "\"body\":\"" + bodyMessage + "\",";
-        payload += "\"data\": \"" + dataValue + "\",";
-        payload += "\"userId\":\"" + userId + "\",";
-        payload += "\"authKey\":\"" + String(authKey) + "\"";
-        payload += "}";
-    
-
-        
-
-        // Send the POST request
-        int httpResponseCode = https.POST(payload);
-
-        // Handle the response
-        if (httpResponseCode > 0) {
-            String response = https.getString();
-            Serial.println("Response Code: " + String(httpResponseCode));
-            Serial.println("Response: " + response);
-        } else {
-            Serial.println("Error sending notification.");
-            Serial.println("HTTP Response code: " + String(httpResponseCode));
-        }
-
-        // Close the HTTPS connection
-        https.end();
-    } else {
-        Serial.println("Error in Wi-Fi connection");
-    }
-}
-
-// Overloaded functions for different data types
-void sendNotificationString(String bodyMessage, String dataValue) {
-    sendNotification(bodyMessage, dataValue);
-}
-
-void sendNotificationInt(String bodyMessage, int dataValue) {
-    sendNotification(bodyMessage, String(dataValue));
-}
-
-void sendNotificationFloat(String bodyMessage, float dataValue) {
-    sendNotification(bodyMessage, String(dataValue));
-}
-
-void sendNotificationJSON(String bodyMessage, String jsonData) {
-    sendNotification(bodyMessage, jsonData);
-}
+// ------------------- Notification wrappers moved to notifications.{h,cpp} -------------------
 
 // Callback function for Firebase real-time updates
 void firebaseUpdateCallback(AsyncResult &aResult) {
     if (aResult.available() && DatabasePtr && aClientPtr) {  // Safety check for initialized pointers
         // Check if this is an update to the geyser control path
         String path = aResult.path();
-        if (path == gsFree + geyser_1) {
+        if (path == AppState::getGsFree() + geyser_1) {
             // Immediate response to Firebase changes - use same approach as dbGetBool
             bool geyserState = DatabasePtr->get<bool>(*aClientPtr, path);
-            digitalWrite(15, geyserState ? HIGH : LOW);  // Use hardcoded pin value (15)
+            digitalWrite(15, geyserState ? HIGH : LOW);  // TODO: Use geyser_1_pin variable
+            AppState::setGeyserOn(geyserState);  // Update centralized state
             Serial.printf("Geyser %s via Firebase (real-time)\n", geyserState ? "ON" : "OFF");
 
             // Track geyser usage for duration logging
@@ -635,7 +487,7 @@ void setupFirebaseListeners() {
     if (DatabasePtr && aClientPtr) {
         Serial.println("Setting up Firebase real-time listeners...");
         // Listen for changes to geyser control
-        DatabasePtr->get(*aClientPtr, gsFree + geyser_1, firebaseUpdateCallback, true); // true = keep listening
+        DatabasePtr->get(*aClientPtr, AppState::getGsFree() + geyser_1, firebaseUpdateCallback, true); // true = keep listening
         Serial.println("Firebase real-time listener active for geyser control");
     } else {
         Serial.println("Firebase not initialized - cannot setup listeners");

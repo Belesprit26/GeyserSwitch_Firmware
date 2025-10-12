@@ -11,7 +11,7 @@
 #endif
 
 // Load sensitive config from untracked header
-#include "secrets.h"
+#include "interfaces/secrets.h"
 
 // Do not declare global ssl_client here; managed internally in firebase_functions.cpp
 
@@ -19,9 +19,9 @@ extern unsigned long previousMillis;
 extern const long interval;
 
 
-// Path variables
-extern String gsFree;
-extern String userId; 
+// Path variables - now managed by AppState
+// extern String gsFree;  // → AppState::getGsFree()
+// extern String userId;   // → AppState::getUserId()
 extern String gsPrime;
 extern const String timer1;
 extern const String timer2;
@@ -86,12 +86,8 @@ void sendNotificationJSON(String bodyMessage, String jsonData);
 // Firebase real-time listener setup
 void setupFirebaseListeners();
 
-// Config defaults and cached refresh
-void ensureDefaultTreeIfMissing();
-void refreshConfigCache10s();
-bool getTimerCached(int index);
-String getCustomTimerCached();
-double getMaxTemp1Cached();
+// Config defaults and cached refresh moved to interfaces/config_cache.h
+#include "interfaces/config_cache.h"
 
 
 #endif // FIREBASE_FUNCTIONS_H

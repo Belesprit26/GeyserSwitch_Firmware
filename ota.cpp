@@ -1,5 +1,6 @@
-#include "ota.h"
-#include "firebase_functions.h"
+#include "interfaces/ota.h"
+#include "interfaces/firebase_functions.h"
+#include "state/app_state.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
@@ -35,7 +36,7 @@ void checkForOTAUpdate() {
     if (dbLastErrorCode() != 0 || remoteVersion.length() == 0) {
         // Fallback to user-specific path if global fails
         Serial.println("Global firmware/version path not found, trying user-specific...");
-        remoteVersion = dbGetString(gsFree + "/firmware/version");
+        remoteVersion = dbGetString(AppState::getGsFree() + "/firmware/version");
     }
     if (dbLastErrorCode() == 0 && remoteVersion.length() > 0) {
         Serial.println("Available remote firmware version: " + remoteVersion);  // Debug
@@ -48,7 +49,7 @@ void checkForOTAUpdate() {
             if (dbLastErrorCode() != 0 || firmwareUrl.length() == 0) {
                 // Fallback to user-specific path if global fails
                 Serial.println("Global firmware/url path not found, trying user-specific...");
-                firmwareUrl = dbGetString(gsFree + "/firmware/url");
+                firmwareUrl = dbGetString(AppState::getGsFree() + "/firmware/url");
             }
             if (dbLastErrorCode() == 0 && firmwareUrl.length() > 0) {
                 Serial.println("Firmware URL: " + firmwareUrl);  // Debug
