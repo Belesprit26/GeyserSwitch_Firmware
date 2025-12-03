@@ -10,8 +10,6 @@
 #endif
 
 void BleBackendNimble::begin(const RtdbPaths* /*paths*/) {
-  // Load local settings/state once.
-  (void)loadSettings();
 #if BUILD_ENABLE_BLE
   NimBLEDevice::init("GeyserSwitch");
   initGatt();
@@ -78,12 +76,10 @@ void BleBackendNimble::subscribeRelayCommand(RelayCallback onChange, void* ctx) 
 }
 
 bool BleBackendNimble::ensureMaxTemp(float defaultCelsius, float &outCelsius) {
-  if (!loaded_) (void)loadSettings();
   outCelsius = settings_.maxTempC;
   if (outCelsius <= 0.0f) {
     settings_.maxTempC = defaultCelsius;
     outCelsius = defaultCelsius;
-    (void)saveSettings();
   }
   return true;
 }
@@ -96,7 +92,6 @@ bool BleBackendNimble::ensureHysteresis(float defaultCelsius, float &outCelsius)
 }
 
 bool BleBackendNimble::ensureTimerFlag(const String &key, bool defaultEnabled, bool &outEnabled) {
-  if (!loaded_) (void)loadSettings();
   bool *slot = nullptr;
   if (key == "04:00") slot = &settings_.t0400;
   else if (key == "06:00") slot = &settings_.t0600;
@@ -106,15 +101,12 @@ bool BleBackendNimble::ensureTimerFlag(const String &key, bool defaultEnabled, b
   if (!slot) return false;
   if (!*slot) *slot = defaultEnabled;
   outEnabled = *slot;
-  (void)saveSettings();
   return true;
 }
 
 bool BleBackendNimble::ensureCustomTime(const String &defaultHhmm, String &outHhmm) {
-  if (!loaded_) (void)loadSettings();
   if (settings_.customTime.length() != 5) {
     settings_.customTime = defaultHhmm;
-    (void)saveSettings();
   }
   outHhmm = settings_.customTime;
   return true;
@@ -133,23 +125,7 @@ bool BleBackendNimble::getIntPath(const String &/*path*/, int &/*outValue*/) {
   return false;
 }
 
-bool BleBackendNimble::loadSettings() {
-  if (loaded_) return true;
-  if (store_.load(settings_, last_)) {
-    loaded_ = true;
-    return true;
-  }
-  // Defaults already in DTO; mark loaded
-  loaded_ = true;
-  return true;
-}
-
-bool BleBackendNimble::saveSettings() {
-  return store_.save(settings_, last_);
-}
-
 void BleBackendNimble::setTimersBitmask(uint8_t mask, const String &defaultCustom) {
-  if (!loaded_) (void)loadSettings();
   bool t0400 = false, t0600 = false, t0800 = false, t1600 = false, t1800 = false, custom = false;
   BleUuids::unpackTimers(mask, t0400, t0600, t0800, t1600, t1800, custom);
   settings_.t0400 = t0400;
@@ -166,7 +142,6 @@ void BleBackendNimble::setTimersBitmask(uint8_t mask, const String &defaultCusto
     // Disable custom by clearing the time string
     settings_.customTime.remove(0);
   }
-  (void)saveSettings();
 }
 
 uint8_t BleBackendNimble::getTimersBitmask() const {
@@ -193,7 +168,6 @@ class BleBackendNimble::CharWriteCb : public NimBLECharacteristicCallbacks {
       auto val = c->getValue();
       float f = 0.0f; memcpy(&f, val.data(), std::min((size_t)sizeof(float), (size_t)val.length()));
       owner_->settings_.maxTempC = f;
-      owner_->saveSettings();
     } else if (uuid == BleUuids::CHAR_HYSTERESISC) {
       auto val = c->getValue();
       float f = 0.0f; memcpy(&f, val.data(), std::min((size_t)sizeof(float), (size_t)val.length()));
@@ -208,7 +182,6 @@ class BleBackendNimble::CharWriteCb : public NimBLECharacteristicCallbacks {
       String hhmm = String(s.c_str());
       hhmm.trim();
       if (hhmm.length() == 5) owner_->settings_.customTime = hhmm; else owner_->settings_.customTime.remove(0);
-      owner_->saveSettings();
     } else if (uuid == BleUuids::CHAR_TIMESYNC_EPOCH) {
       auto val = c->getValue();
       uint32_t epoch = 0; memcpy(&epoch, val.data(), std::min((size_t)sizeof(uint32_t), (size_t)val.length()));

@@ -15,28 +15,6 @@ void Application::begin() {
 
   initializeWifiAndTime();
 
-  // Load persisted settings/state (safe default - do not drive relay here)
-  {
-    SettingsDto dto;
-    // Prefer RTC (warm restart), fall back to flash
-    if (!RtcStore::load(lastPersist_)) {
-      (void)0;
-    }
-    if (settingsStore_.load(dto, lastPersist_)) {
-      settings_.maxTempC = dto.maxTempC;
-      settings_.customTime = dto.customTime;
-      settings_.t0400 = dto.t0400;
-      settings_.t0600 = dto.t0600;
-      settings_.t0800 = dto.t0800;
-      settings_.t1600 = dto.t1600;
-      settings_.t1800 = dto.t1800;
-      lastSavedDto_ = dto;
-      Logger::info("Persist: settings loaded (max=%.1f, hyst=%.1f, CUSTOM=%s)", settings_.maxTempC, settings_.hysteresisC, settings_.customTime.c_str());
-    } else {
-      Logger::info("Persist: no valid settings found; using defaults");
-    }
-  }
-
   initializeCloud();
 
   initializeSensorsAndActuators();
@@ -87,8 +65,6 @@ void Application::runLoop() {
       remote_->ensureTimerFlag("16:00", false, settings_.t1600);
       remote_->ensureTimerFlag("18:00", false, settings_.t1800);
     }
-    // Detect and schedule persistence if settings changed
-    markSettingsDirtyIfChanged();
 #if BUILD_LOG_SETTINGS_VERBOSE
     Logger::warn(
       "Timers: { 04:00: %s, 06:00: %s, 08:00: %s, 16:00: %s, 18:00: %s, CUSTOM: %s }",
@@ -175,8 +151,7 @@ void Application::runLoop() {
     if (haveTemp && ci.tempC >= ci.maxTempC && relay_.isOn()) {
       relay_.setOn(false);
       Logger::warn("Control: target temperature cutoff at %.2f >= %.2f -> OFF", ci.tempC, ci.maxTempC);
-        if (remote_) remote_->publishRelayState(false);
-      onRelayStateChanged(false, "targetTemp");
+      if (remote_) remote_->publishRelayState(false);
       recordUsageOff("targetTemp", "fromDevice");
     }
 
@@ -207,9 +182,6 @@ void Application::runLoop() {
       }
     }
   }
-
-  // Debounced persistence
-  tryPersist(nowMs);
 
   delay(5);  // Yield briefly to avoid tight spin in early skeleton
 }
@@ -365,7 +337,6 @@ void Application::processScheduleTriggers(bool haveTemp, float tempC) {
             Logger::info("Schedule: trigger %s -> ON (no temp yet)", hhmmFlag);
           }
           if (remote_) remote_->publishRelayState(true);
-          onRelayStateChanged(true, "schedule");
           recordUsageOn("schedule", "fromDevice");
         } else {
           Logger::info("Schedule: trigger %s skipped (temp=%.1f >= %.1f)", hhmmFlag, tempC, reenable);
@@ -415,14 +386,9 @@ void Application::initializeCloud() {
     // where our write triggers the stream again and flips repeatedly.
     // Mirror physical state to the state path so remote clients can see the device result
     if (self->remote_) self->remote_->publishRelayState(hwOn);
-    // Mark last command and state for persistence
-    self->lastPersist_.hasLastCommand = true;
-    self->lastPersist_.lastCommandOn = on;
-    self->lastPersist_.lastCommandTs = millis();
     // Track for decision logs
     self->lastCommandKnown_ = true;
     self->lastCommandOn_ = on;
-    self->onRelayStateChanged(hwOn, "command");
     // Only record usage when the physical state actually changes
     if (hwOn != wasOn) {
       if (hwOn) self->recordUsageOn("command", "fromUser");
@@ -437,65 +403,14 @@ void Application::initializeCloud() {
   #endif
 
   // Settings subscriptions removed; we use pull-only ensure in runLoop()
+
+  // Activate the selected backend so it can start processing (RTDB auth loop or BLE advertising).
+  if (remote_) {
+    remote_->activate(true);
+  }
 }
 
 void Application::selectRemoteBackend() {
   // Compile-time flavor: backend chosen at init, no switching
 }
-
-void Application::markSettingsDirtyIfChanged() {
-  SettingsDto dto;
-  dto.maxTempC = settings_.maxTempC;
-  dto.customTime = settings_.customTime;
-  dto.t0400 = settings_.t0400;
-  dto.t0600 = settings_.t0600;
-  dto.t0800 = settings_.t0800;
-  dto.t1600 = settings_.t1600;
-  dto.t1800 = settings_.t1800;
-
-  bool changed =
-    dto.maxTempC != lastSavedDto_.maxTempC ||
-    dto.customTime != lastSavedDto_.customTime ||
-    dto.t0400 != lastSavedDto_.t0400 ||
-    dto.t0600 != lastSavedDto_.t0600 ||
-    dto.t0800 != lastSavedDto_.t0800 ||
-    dto.t1600 != lastSavedDto_.t1600 ||
-    dto.t1800 != lastSavedDto_.t1800;
-
-  if (changed) {
-    lastSavedDto_ = dto;
-    persistDirty_ = true;
-  }
-}
-
-void Application::onRelayStateChanged(bool on, const char* /*reason*/) {
-  lastPersist_.hasLastState = true;
-  lastPersist_.lastStateOn = on;
-  lastPersist_.lastStateTs = millis();
-  persistDirty_ = true;
-}
-
-void Application::tryPersist(uint32_t nowMs) {
-  if (!persistDirty_) return;
-  static uint32_t firstDirtyMs = 0;
-  const uint32_t debounceMs = 2000;
-  const uint32_t rateLimitMs = 60000;
-
-  if (lastPersistFlushMs_ != 0 && nowMs - lastPersistFlushMs_ < rateLimitMs) return;
-  if (firstDirtyMs == 0) firstDirtyMs = nowMs;
-  if (nowMs - firstDirtyMs < debounceMs) return;
-
-  SettingsDto dto = lastSavedDto_;
-  if (settingsStore_.save(dto, lastPersist_)) {
-    Logger::info("Persist: saved settings/state");
-    lastPersistFlushMs_ = nowMs;
-    persistDirty_ = false;
-    firstDirtyMs = 0;
-    // Also cache to RTC for warm restarts
-    RtcStore::save(lastPersist_);
-  } else {
-    Logger::warn("Persist: save failed");
-  }
-}
-
 

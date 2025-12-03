@@ -23,8 +23,6 @@
 #if BUILD_ENABLE_BLE
 #include "src/infrastructure/ble/BleBackendNimble.h"
 #endif
-#include "src/infrastructure/SettingsStore.h"
-#include "src/infrastructure/RtcStore.h"
 
 class Application {
  public:
@@ -52,12 +50,7 @@ class Application {
   BleBackendNimble ble_;
 #endif
   RemoteBackend* remote_ = nullptr;  // active remote (RTDB now, BLE later)
-  SettingsStore settingsStore_;
-  PersistLastRecord lastPersist_{};
-  uint32_t lastPersistFlushMs_ = 0;  // rate limit saves
-  bool persistDirty_ = false;
-  // Snapshot of last saved DTO to detect changes
-  SettingsDto lastSavedDto_{};
+  // Settings and command/state are kept in RAM only; no local flash/RTC persistence.
   // Last command seen via stream (for decision logs)
   bool lastCommandKnown_ = false;
   bool lastCommandOn_ = false;
@@ -96,10 +89,7 @@ class Application {
   // Schedule helpers
   static int parseHhmmToMinutes(const String &hhmm);
   void processScheduleTriggers(bool haveTemp, float tempC);
-  void markSettingsDirtyIfChanged();
-  void tryPersist(uint32_t nowMs);
-  void onRelayStateChanged(bool on, const char* reason);
-  // Usage logging
+  // Usage logging (remote only; no local persistence)
   void recordUsageOn(const char* reason, const char* instruction);
   void recordUsageOff(const char* reason, const char* instruction);
   String usageDayPath() const;

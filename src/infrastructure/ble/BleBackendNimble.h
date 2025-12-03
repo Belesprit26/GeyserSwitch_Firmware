@@ -4,12 +4,10 @@
 
 #include "src/config/BuildConfig.h"
 #include "src/infrastructure/RemoteBackend.h"
-#include "src/infrastructure/SettingsStore.h"
 #include "src/infrastructure/ble/BleUuids.h"
 
-// BLE backend skeleton implementing RemoteBackend.
-// This initial version does not start BLE yet; it provides stubs and
-// local NVS-backed ensures for settings using SettingsStore.
+// BLE backend implementing RemoteBackend with an in-RAM settings cache only
+// (no local NVS/RTC persistence).
 class BleBackendNimble : public RemoteBackend {
  public:
   BleBackendNimble() = default;
@@ -35,18 +33,22 @@ class BleBackendNimble : public RemoteBackend {
   bool getIntPath(const String &/*path*/, int &/*outValue*/) override;
 
  private:
-  // Local persistence helpers
-  bool loadSettings();
-  bool saveSettings();
+  // Simple in-RAM settings cache (no local flash/RTC persistence)
+  struct BleSettings {
+    float maxTempC = 70.0f;
+    String customTime;   // "HH:MM" or empty
+    bool t0400 = false;
+    bool t0600 = false;
+    bool t0800 = false;
+    bool t1600 = false;
+    bool t1800 = false;
+  };
 
   // Timers bitmask helpers (for GATT write/read handlers)
   void setTimersBitmask(uint8_t mask, const String &defaultCustom = String("05:00"));
   uint8_t getTimersBitmask() const;
 
-  SettingsStore store_;
-  SettingsDto settings_{};
-  PersistLastRecord last_{};
-  bool loaded_ = false;
+  BleSettings settings_{};
   bool active_ = false;
   RelayCallback relayCb_ = nullptr;
   void* relayCtx_ = nullptr;
