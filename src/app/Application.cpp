@@ -29,9 +29,12 @@ void Application::runLoop() {
   // Placeholder for future task processing. Keep it fast and non-blocking.
   // We'll add cooperative polling here until FreeRTOS tasks are wired.
   wifi_.ensureConnected();
-  // Maintain active remote backend (auto switch per connectivity)
+  // Maintain active remote backend (cloud) and BLE side-by-side.
   selectRemoteBackend();
   if (remote_) remote_->loop();
+#if BUILD_ENABLE_BLE
+  ble_.loop();
+#endif
 
   // Periodic control + temperature logging every 10s.
   static uint32_t lastTempLogMs = 0;
@@ -119,6 +122,12 @@ void Application::runLoop() {
         // Publish raw reading for observability; control below uses `smoothedTempC_`.
         Logger::info("Temp: %.2f C (smoothed=%.2f)", tC, smoothedTempC_);
         if (remote_) remote_->publishTempC(tC);
+#if BUILD_ENABLE_BLE
+        // Mirror temperature over BLE when BLE is enabled.
+        if (remote_ != static_cast<RemoteBackend*>(&ble_)) {
+          ble_.publishTempC(tC);
+        }
+#endif
       }
     } else {
       // We are currently in a backoff window; skip hitting the sensor bus.
@@ -152,6 +161,11 @@ void Application::runLoop() {
       relay_.setOn(false);
       Logger::warn("Control: target temperature cutoff at %.2f >= %.2f -> OFF", ci.tempC, ci.maxTempC);
       if (remote_) remote_->publishRelayState(false);
+#if BUILD_ENABLE_BLE
+      if (remote_ != static_cast<RemoteBackend*>(&ble_)) {
+        ble_.publishRelayState(false);
+      }
+#endif
       recordUsageOff("targetTemp", "fromDevice");
     }
 
@@ -179,6 +193,11 @@ void Application::runLoop() {
         strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", lt);
         strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", lt);
         if (remote_) remote_->publishLastUpdate(String(timeBuf), String(dateBuf));
+#if BUILD_ENABLE_BLE
+        if (remote_ != static_cast<RemoteBackend*>(&ble_)) {
+          ble_.publishLastUpdate(String(timeBuf), String(dateBuf));
+        }
+#endif
       }
     }
   }
@@ -245,6 +264,10 @@ void Application::addUsageToDailyTotal(uint32_t durationSec) {
   }
   total += (int)durationSec;
   if (remote_) remote_->setIntPath(dayPath + "/totalDurationSec", total);
+#if BUILD_ENABLE_BLE
+  // Mirror usage total over BLE so the characteristic stays in sync.
+  ble_.setIntPath(dayPath + "/totalDurationSec", total);
+#endif
 }
 
 void Application::initializeLogger() {
@@ -337,6 +360,11 @@ void Application::processScheduleTriggers(bool haveTemp, float tempC) {
             Logger::info("Schedule: trigger %s -> ON (no temp yet)", hhmmFlag);
           }
           if (remote_) remote_->publishRelayState(true);
+#if BUILD_ENABLE_BLE
+          if (remote_ != static_cast<RemoteBackend*>(&ble_)) {
+            ble_.publishRelayState(true);
+          }
+#endif
           recordUsageOn("schedule", "fromDevice");
         } else {
           Logger::info("Schedule: trigger %s skipped (temp=%.1f >= %.1f)", hhmmFlag, tempC, reenable);
@@ -357,26 +385,26 @@ void Application::processScheduleTriggers(bool haveTemp, float tempC) {
 }
 
 void Application::initializeCloud() {
-  // Initialize RTDB client and subscribe to live relay commands. When a command
-  // comes in, toggle relay immediately.
-  #if BUILD_ENABLE_RTDB
+  // Initialize RTDB client and BLE backend. When a command comes in from either,
+  // toggle relay immediately.
+#if BUILD_ENABLE_RTDB
   rtdb_.begin(&rtdbPaths_);
-  #endif
-  #if BUILD_ENABLE_BLE
+#endif
+#if BUILD_ENABLE_BLE
   ble_.begin(&rtdbPaths_);
-  #endif
-  // Choose backend per flavor
-  #if BUILD_ENABLE_RTDB
+#endif
+  // Primary backend is RTDB when enabled; BLE runs side-by-side.
+#if BUILD_ENABLE_RTDB
   remote_ = &rtdb_;
-  #elif BUILD_ENABLE_BLE
+#elif BUILD_ENABLE_BLE
   remote_ = &ble_;
-  #else
+#else
   remote_ = nullptr;
-  #endif
+#endif
   struct RelayThunk { static void call(bool on, void* ctx) {
     Application* self = static_cast<Application*>(ctx);
     if (!self) return;
-    // Map Firebase boolean directly to hardware state:
+    // Map remote boolean directly to hardware state:
     // true -> pin HIGH (LED ON when active-high), false -> pin LOW (LED OFF)
     bool hwOn = on;
     bool wasOn = self->relay_.isOn();
@@ -384,8 +412,13 @@ void Application::initializeCloud() {
     Logger::info("Relay set %s via RTDB", hwOn ? "ON" : "OFF");
     // Do NOT write back to the same path here; that would create a feedback loop
     // where our write triggers the stream again and flips repeatedly.
-    // Mirror physical state to the state path so remote clients can see the device result
+    // Mirror physical state so remote clients (cloud & BLE) can see the device result
     if (self->remote_) self->remote_->publishRelayState(hwOn);
+#if BUILD_ENABLE_BLE
+    if (self->remote_ != static_cast<RemoteBackend*>(&self->ble_)) {
+      self->ble_.publishRelayState(hwOn);
+    }
+#endif
     // Track for decision logs
     self->lastCommandKnown_ = true;
     self->lastCommandOn_ = on;
@@ -395,19 +428,22 @@ void Application::initializeCloud() {
       else self->recordUsageOff("command", "fromUser");
     }
   }};
-  #if BUILD_ENABLE_RTDB
+#if BUILD_ENABLE_RTDB
   rtdb_.subscribeRelayCommand(&RelayThunk::call, this);
-  #endif
-  #if BUILD_ENABLE_BLE
+#endif
+#if BUILD_ENABLE_BLE
   ble_.subscribeRelayCommand(&RelayThunk::call, this);
-  #endif
+#endif
 
   // Settings subscriptions removed; we use pull-only ensure in runLoop()
 
-  // Activate the selected backend so it can start processing (RTDB auth loop or BLE advertising).
-  if (remote_) {
-    remote_->activate(true);
-  }
+  // Activate all enabled backends so they can start processing (RTDB auth loop, BLE advertising).
+#if BUILD_ENABLE_RTDB
+  rtdb_.activate(true);
+#endif
+#if BUILD_ENABLE_BLE
+  ble_.activate(true);
+#endif
 }
 
 void Application::selectRemoteBackend() {

@@ -10,9 +10,9 @@
 // Compile-time feature toggles (choose one flavor per build)
 // Online flavor: BUILD_ENABLE_RTDB=1, BUILD_ENABLE_BLE=0, USE_MOBIZT_FIREBASE=1
 // Offline flavor: BUILD_ENABLE_RTDB=0, BUILD_ENABLE_BLE=1, USE_MOBIZT_FIREBASE=0
-// Defaults below keep online flavor; adjust per build.
+// Combined flavor (default here): BUILD_ENABLE_RTDB=1, BUILD_ENABLE_BLE=1.
 #ifndef BUILD_ENABLE_RTDB
-#define BUILD_ENABLE_RTDB 0
+#define BUILD_ENABLE_RTDB 1
 #endif
 #ifndef BUILD_ENABLE_BLE
 #define BUILD_ENABLE_BLE 1
