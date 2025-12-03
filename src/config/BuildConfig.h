@@ -21,9 +21,10 @@
 #define USE_MOBIZT_FIREBASE BUILD_ENABLE_RTDB
 #endif
 
-// Verbose settings logging (timers and target temperature) every cycle
+// Verbose settings logging (timers and target temperature) every cycle.
+// Disable by default to reduce flash usage; enable (set to 1) when debugging.
 #ifndef BUILD_LOG_SETTINGS_VERBOSE
-#define BUILD_LOG_SETTINGS_VERBOSE 1
+#define BUILD_LOG_SETTINGS_VERBOSE 0
 #endif
 
 // Remove runtime mode selection; flavor chosen at compile time

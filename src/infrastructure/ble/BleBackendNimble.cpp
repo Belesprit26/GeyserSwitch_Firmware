@@ -117,12 +117,22 @@ bool BleBackendNimble::setStringPath(const String &/*path*/, const String &/*val
   return true;
 }
 
-bool BleBackendNimble::setIntPath(const String &/*path*/, int /*value*/) {
+bool BleBackendNimble::setIntPath(const String &/*path*/, int value) {
+  if (value < 0) value = 0;
+  usageTotalTodaySec_ = static_cast<uint32_t>(value);
+#if BUILD_ENABLE_BLE
+  if (cUsageTotal_) {
+    uint32_t v = usageTotalTodaySec_;
+    ((NimBLECharacteristic*)cUsageTotal_)->setValue(reinterpret_cast<uint8_t*>(&v), sizeof(uint32_t));
+    ((NimBLECharacteristic*)cUsageTotal_)->notify();
+  }
+#endif
   return true;
 }
 
-bool BleBackendNimble::getIntPath(const String &/*path*/, int &/*outValue*/) {
-  return false;
+bool BleBackendNimble::getIntPath(const String &/*path*/, int &outValue) {
+  outValue = static_cast<int>(usageTotalTodaySec_);
+  return true;
 }
 
 void BleBackendNimble::setTimersBitmask(uint8_t mask, const String &defaultCustom) {
@@ -251,6 +261,10 @@ void BleBackendNimble::updateCharacteristicMirrors() {
   }
   if (cCustom_) {
     ((NimBLECharacteristic*)cCustom_)->setValue(settings_.customTime.c_str());
+  }
+  if (cUsageTotal_) {
+    uint32_t v = usageTotalTodaySec_;
+    ((NimBLECharacteristic*)cUsageTotal_)->setValue(reinterpret_cast<uint8_t*>(&v), sizeof(uint32_t));
   }
 }
 

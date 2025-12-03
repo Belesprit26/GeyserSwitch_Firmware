@@ -52,6 +52,8 @@ class BleBackendNimble : public RemoteBackend {
   bool active_ = false;
   RelayCallback relayCb_ = nullptr;
   void* relayCtx_ = nullptr;
+  // In-RAM daily usage total in seconds, mirrored to CHAR_USAGE_TOTAL_TODAY.
+  uint32_t usageTotalTodaySec_ = 0;
 
   // Local-only hysteresis until persisted support is added
   float hysteresisC_ = 2.0f;
